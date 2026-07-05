@@ -19,6 +19,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -36,5 +38,3 @@ jobs:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
-        env:
-          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
