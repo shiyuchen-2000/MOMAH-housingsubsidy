@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The standalone build is served on GitHub Pages PROJECT PAGE (/<repo>/), so rewrite the
 // primary path to "/MOMAH-housingsub/assets/...". Only matches the src="/assets/..." form,
 // so the onError fallbacks ("public/assets/..." and "assets/...") are left untouched.
-const REPO_BASE = "/MOMAH-housingsub";
+const REPO_BASE = "/MOMAH-housingsubsidy";
 const css = fs.readFileSync(path.join(root, "src", "styles.css"), "utf8").replaceAll("url('/assets/", "url('" + REPO_BASE + "/assets/");
 let code = fs.readFileSync(path.join(root, "src", "App.jsx"), "utf8").replaceAll('"/assets/', '"' + REPO_BASE + '/assets/');
 
