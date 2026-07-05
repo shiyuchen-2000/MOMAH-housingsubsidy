@@ -31,8 +31,10 @@ jobs:
           cp standalone.html _site/standalone.html
           if [ -d assets ]; then cp -r assets _site/assets; fi
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
+        env:
+          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
