@@ -54,6 +54,8 @@ const harness = `
       allocation:{lastSync:"2026-06-01 06:00",recalcAt:null,status:"draft",rejectNote:"",at:null},
       recalcAlloc:()=>{}, submitAlloc:()=>{}, actAlloc:()=>{},
       leaks:seedAll.leaks, leakAct:()=>{},
+      configChanges:typeof seedConfigChanges==='function'?seedConfigChanges():[], addConfigChange:()=>{}, submitConfigChange:()=>{}, actOnConfigChange:()=>{},
+      whatifContext:null, setWhatifContext:()=>{},
       budget:{cash:1580,inkind:220,ceiling:4200,enteredBy:"owner",enteredAt:"2026-05-28 10:00",daysSince:18}, saveBudget:()=>{} };
   }
   const PAGES=[["Login","analyst",Login],["AnalystHome","analyst",AnalystHome],["OwnerHome","owner",OwnerHome],["MinisterHome","minister",MinisterHome],

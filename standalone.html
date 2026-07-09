@@ -661,7 +661,7 @@ function fgByRegion(globalFG, baselineFG){
    ========================================================================= */
 // Seasonal weights (Jan contract surge, mid-year / post-Ramadan dip, year-end push).
 const FC_SEASON=[1.18,1.06,0.99,0.96,0.92,0.86,0.80,0.78,0.95,1.06,1.12,1.20];
-function buildForecast(scn){
+function buildForecast(scn, alertThreshold){
   const annualCeiling = BRD.phase3BudgetSAR / BRD.phase3Years; // 1.58B
   const monthlyCeiling = annualCeiling/12;
   const monthlyAvg = scn.spend/12;
@@ -676,7 +676,8 @@ function buildForecast(scn){
   const fc=[]; let last=months[11].projected, fcum=cum;
   for(let k=1;k<=3;k++){ const proj=Math.round(last+slope*k); fcum+=proj;
     fc.push({ m:12+k, proj, lo:Math.round(proj*0.88), hi:Math.round(proj*1.12), cumulative:Math.round(fcum), ceiling:Math.round(monthlyCeiling*(12+k)) }); }
-  const alertMonth = months.find(x=>x.cumulative > monthlyCeiling*x.m*0.70);
+  const thr = (alertThreshold ?? 70) / 100;
+  const alertMonth = months.find(x=>x.cumulative > monthlyCeiling*x.m*thr);
   return { months, fc, annualCeiling, monthlyCeiling, alertMonth: alertMonth? alertMonth.m : null };
 }
 
@@ -706,7 +707,7 @@ const I18N = {
     nav_home:"Dashboard", nav_data:"Data Readiness", nav_alloc:"Allocation Plan", nav_forecast:"Spend Forecast", back:"Back",
     nav_whatif:"What-if Simulation", nav_packages:"Decision Packages", nav_approvals:"Approvals",
     nav_audit:"Audit Trail", act_version:"Version change", act_threshold:"Threshold change", act_refer:"Referral", act_report:"Leakage report", audit_worm:"Append-only · Cannot be deleted or modified · All decisions and actions are permanently recorded",
-    audit_catAll:"All", audit_catPkg:"Decisions", audit_catFormula:"Formula", audit_catThreshold:"Threshold", audit_catRef:"Beneficiary", audit_catFair:"Fairness/Leakage", audit_catWhatif:"What-if",
+    audit_catAll:"All", audit_catPkg:"Decisions", audit_catFormula:"Formula", audit_catThreshold:"Threshold", audit_catRef:"Beneficiary", audit_catFair:"Fairness/Leakage", audit_catWhatif:"What-if", audit_catConfig:"Config",
     nav_copilot:"Housing Copilot", nav_cockpit:"Strategic Cockpit", nav_decisions:"Strategic Decisions", nav_fairness:"Fairness & Leakage", nav_orchestration:"Orchestration", nav_dash360:"Beneficiary 360°",
     // KPIs
     kpi_savings:"Projected savings (5-yr)", kpi_fairness:"Fairness Gap", kpi_hbr:"Housing Burden (HBR)",
@@ -742,6 +743,7 @@ const I18N = {
     forecast_sub:"12-month spend projection with budget ceiling, plus multi-dimensional Fairness Gap & leakage.",
   fc_stressTitle:"Stress Scenario Analysis", fc_stressSub:"3 automatic stress scenarios", fc_stressTip:"Forecast engine automatically produces 3 stress scenarios",
   fc_stressScenario:"Scenario", fc_stressImpact:"Impact", fc_stressNote:"Note", fc_stressBr:"System auto-generates 3 stress scenarios",
+  supportType:"Support Type", st_monthly:"Monthly", st_package:"Package", st_mix:"Mix",
   fc_stressRate:"Rate +2%", fc_stressRateNote:"Higher rates increase long-term liabilities",
   fc_stressExit:"Exits -30%", fc_stressExitNote:"Lower early exits free part of budget",
   fc_stressNew:"New Contracts +20%", fc_stressNewNote:"New contracts increase future commitments",
@@ -870,6 +872,7 @@ const I18N = {
     forecast_sub:"تنبؤ إنفاق ١٢ شهراً مع سقف الميزانية، وفجوة عدالة متعددة الأبعاد ورصد التسرب.",
   fc_stressTitle:"تحليل سيناريوهات الضغط", fc_stressSub:"3 سيناريوهات ضغط تلقائية", fc_stressTip:"محرك التنبؤ ينتج 3 سيناريوهات ضغط تلقائياً",
   fc_stressScenario:"السيناريو", fc_stressImpact:"الأثر", fc_stressNote:"ملاحظة", fc_stressBr:"يولد النظام تلقائياً 3 سيناريوهات ضغط",
+  supportType:"نوع الدعم", st_monthly:"شهري", st_package:"حزمة", st_mix:"مزيج",
   fc_stressRate:"سعر الفائدة +2%", fc_stressRateNote:"ارتفاع الفائدة يزيد الالتزامات طويلة الأجل",
   fc_stressExit:"الخروج -30%", fc_stressExitNote:"انخفاض الخروج المبكر يحرر جزءاً من الميزانية",
   fc_stressNew:"العقود الجديدة +20%", fc_stressNewNote:"العقود الجديدة تزيد الالتزامات المستقبلية",
@@ -1292,11 +1295,13 @@ function ReleaseNotes({onClose}){
   </Modal>);
 }
 function Sidebar(){
-  const {t,user,route,setRoute,packages}=useStore();
+  const {t,user,route,setRoute,packages,configChanges}=useStore();
   const [rel,setRel]=useState(false);
   const groups = NAV_GROUPS[user]||[];
   const pendingForOwner = packages.filter(p=>p.status==="submitted").length;
   const pendingForMin = packages.filter(p=>p.status==="escalated").length;
+  const pendingConfigForOwner = configChanges.filter(c=>c.status==="pending"&&!c.p03Required).length;
+  const pendingConfigForMin = configChanges.filter(c=>c.status==="pending"&&c.p03Required).length;
   // Dashboard route differs by role
   const dashRoute = user==="minister" ? "cockpit" : "home";
   const dashLabel = user==="minister" ? "nav_cockpit" : "nav_home";
@@ -1312,7 +1317,7 @@ function Sidebar(){
         <div className="sidebar-section-title">{t(g.label)}</div>
         {g.items.map(([k,ic])=>{
           const key=k.replace("nav_","");
-          const badge = (user==="owner"&&k==="nav_approvals"&&pendingForOwner)||(user==="minister"&&k==="nav_decisions"&&pendingForMin);
+          const badge = (user==="owner"&&k==="nav_approvals"&&(pendingForOwner+pendingConfigForOwner))||(user==="minister"&&k==="nav_decisions"&&(pendingForMin+pendingConfigForMin));
           return (<div key={k} className={"navitem"+(route===key?" active":"")} onClick={()=>setRoute(key)}>
             <Icon name={ic}/><span style={{flex:1}}>{t(k)}</span>
             {badge?<span className="badge-count">{badge}</span>:null}</div>);
@@ -1627,7 +1632,10 @@ function computeRegionAlloc(src, region){
   return { rows, spend, FG:r.fg, HBR:avgHbr, totContracts:tot };
 }
 function Allocation(){
-  const {t,user,allocation,recalcAlloc,submitAlloc,actAlloc,setRoute,baseline}=useStore(); const {moneyFull}=useMoney();
+  const {t,user,allocation,recalcAlloc,submitAlloc,actAlloc,setRoute,baseline,settingsVals,setWhatifContext}=useStore(); const {moneyFull}=useMoney();
+  const fgMin = settingsVals.set_fgMin ?? 1.0;
+  const hbrCeil = (settingsVals.set_hbrCeil ?? 38) / 100;
+  const annualBudgetSetting = settingsVals.set_annual ?? 1580;
   const [open,setOpen]=useState(null);
   const [busy,setBusy]=useState(false); const [note,setNote]=useState(""); const [err,setErr]=useState(false);
   const [gateDataChecked,setGateDataChecked]=useState(false);
@@ -1636,7 +1644,7 @@ function Allocation(){
   const a=allocation||{lastSync:"—",recalcAt:null,status:"draft",rejectNote:""};
   const data=useMemo(()=>computeRegionAlloc(baseline,selRegion),[baseline,selRegion]);
   const rgInfo=selRegion==="all"?null:REGIONS.find(x=>x.key===selRegion);
-  const annualBudget=BRD.phase3BudgetSAR/BRD.phase3Years;
+  const annualBudget = (annualBudgetSetting * 1e6) || (BRD.phase3BudgetSAR / BRD.phase3Years);
   const regionBudget=rgInfo?annualBudget*rgInfo.w:annualBudget;
   function doRecalc(){ setBusy(true); setTimeout(()=>{ recalcAlloc&&recalcAlloc(); setBusy(false); },900); }
   function doReject(){ if(!note.trim()){ setErr(true); return; } actAlloc&&actAlloc("reject",note.trim()); setNote(""); setErr(false); }
@@ -1646,8 +1654,8 @@ function Allocation(){
     <PageHeader title={t("nav_alloc")} sub={t("alloc_sub")} right={statusChip}/>
     <div className="dr-strip" style={{marginBottom:16}}>
       <div className={"mini-kpi"+(data.spend<=regionBudget?"":" alert-mini")}><div className="muted" style={{fontSize:11.5}}>Budget Ceiling</div><div className="v" style={{color:data.spend<=regionBudget?"var(--primary)":"var(--amber)"}}>{data.spend<=regionBudget?"✅ Within":"⚠️ Over"}</div></div>
-      <div className={"mini-kpi"+(data.FG>=1.0?"":" alert-mini")}><div className="muted" style={{fontSize:11.5}}>Fairness Gap ≥ 1.0</div><div className="v" style={{color:data.FG>=1.0?"var(--primary)":"var(--amber)"}}>{data.FG>=1.0?"✅ "+data.FG.toFixed(2):"⚠️ "+data.FG.toFixed(2)}</div></div>
-      <div className={"mini-kpi"+(data.HBR<=0.35?"":" alert-mini")}><div className="muted" style={{fontSize:11.5}}>HBR ≤ 35%</div><div className="v" style={{color:data.HBR<=0.35?"var(--primary)":"var(--amber)"}}>{data.HBR<=0.35?"✅ "+pct1(data.HBR):"⚠️ "+pct1(data.HBR)}</div></div>
+      <div className={"mini-kpi"+(data.FG>=fgMin?"":" alert-mini")}><div className="muted" style={{fontSize:11.5}}>Fairness Gap ≥ {fgMin.toFixed(1)}</div><div className="v" style={{color:data.FG>=fgMin?"var(--primary)":"var(--amber)"}}>{data.FG>=fgMin?"✅ "+data.FG.toFixed(2):"⚠️ "+data.FG.toFixed(2)}</div></div>
+      <div className={"mini-kpi"+(data.HBR<=hbrCeil?"":" alert-mini")}><div className="muted" style={{fontSize:11.5}}>HBR ≤ {pct1(hbrCeil)}</div><div className="v" style={{color:data.HBR<=hbrCeil?"var(--primary)":"var(--amber)"}}>{data.HBR<=hbrCeil?"✅ "+pct1(data.HBR):"⚠️ "+pct1(data.HBR)}</div></div>
       <div className="region-picker"><select value={selRegion} onChange={e=>setSelRegion(e.target.value)}>
         <option value="all">{t("rg_national")}</option>
         <option disabled>──────────</option>
@@ -1683,17 +1691,18 @@ function Allocation(){
     </Section>
     <Section title={<span className="sect-right">{t("monthlyCycle")}<InfoTip text={t("fml_alloc")}/></span>} right={<span className="sect-right"><span className="chip">{t("kpi_budget")}: {(data.spend/regionBudget*100).toFixed(0)}%</span><AgentBadge name={t("agent_alloc")} lvl="L2"/></span>}>
       <div className="scrollx"><table className="tbl">
-        <thead><tr><th>{t("incomeBand")}</th><th className="right-num">{t("contracts")}</th><th className="right-num">{t("subsidy")}</th><th className="right-num">{t("share")}</th><th className="right-num">{t("al_vsPrev")}</th><th></th></tr></thead>
+        <thead><tr><th>{t("incomeBand")}</th><th className="right-num">{t("contracts")}</th><th className="right-num">{t("subsidy")}</th><th className="right-num">{t("supportType")}</th><th className="right-num">{t("share")}</th><th className="right-num">{t("al_vsPrev")}</th><th></th></tr></thead>
         <tbody>{data.rows.map((r,i)=>{ const dv=r.subsidy>0?ALLOC_VSPREV[i%ALLOC_VSPREV.length]:null; return (<React.Fragment key={r.key}>
           <tr>
             <td>{bandLabel(t,r.key)} {r.below?<span className="chip gray" style={{marginInlineStart:6}}>{t("below10k")}</span>:null}</td>
             <td className="right-num mono">{n0(r.contracts)}</td>
             <td className="right-num mono">{moneyFull(r.subsidy)}</td>
+            <td className="right-num"><span className="chip" style={{fontSize:10,whiteSpace:"nowrap"}}>{r.below?t("st_mix"):t("st_monthly")}</span><br/><span className="muted" style={{fontSize:10}}>+{moneyFull(r.pkg)} {t("st_package")}</span></td>
             <td className="right-num mono">{(r.cShare*100).toFixed(1)}%</td>
             <td className="right-num mono" style={{color:dv==null?"var(--muted)":dv>0?"var(--amber)":"var(--primary)",fontSize:12}}>{dv==null?"—":(dv>0?"▲ +":"▼ ")+"⃁ "+Math.abs(dv)}</td>
             <td className="right-num"><button className="btn sm" onClick={()=>setOpen(open===i?null:i)}>{t("explain")}</button></td>
           </tr>
-          {open===i&&<tr className="expand-row"><td colSpan={6}>
+          {open===i&&<tr className="expand-row"><td colSpan={7}>
             <div style={{fontSize:12.5}}>
               <div className="alx-grid">
                 <div><div className="alx-h">{t("alx_how")}</div><div className="muted">{t("alx_howT")}<br/><span className="chip gray" style={{marginTop:4}}>FML-v1.0 · Ded. 40% · Dur. 20y</span></div></div>
@@ -1702,7 +1711,10 @@ function Allocation(){
               </div>
               {dv!=null&&<div style={{marginTop:8}}><b>{t("al_vsPrev")}:</b> <span className="mono" style={{color:dv>0?"var(--amber)":"var(--primary)"}}>{(dv>0?"+":"")}⃁ {dv}</span> <span className="muted">— {t("alx_reason")}</span></div>}
               <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
-                <button className="btn secondary sm" onClick={()=>setRoute&&setRoute("whatif")}>✦ {t("wf_runHint")}</button>
+                <button className="btn secondary sm" onClick={()=>{
+                  setWhatifContext({ bandKey:r.key, bandLabel:bandLabel(t,r.key), subsidy:r.subsidy, pkg:r.pkg, hbr:r.hbr, cShare:r.cShare, below:r.below, homePrice:r.homePrice });
+                  setRoute&&setRoute("whatif");
+                }}>✦ {t("wf_runHint")}</button>
                 <button className="btn ghost sm" onClick={()=>setAnnoOpen(annoOpen===i?null:i)}>🏷️ {t("alx_annotate")}</button>
               </div>
               {annoOpen===i&&<textarea className="input" placeholder={t("alx_annoPh")} style={{marginTop:8,minHeight:54,width:"100%"}}/>}
@@ -1721,8 +1733,8 @@ function Allocation(){
 
 /* ---- Forecast & Fairness ---- */
 function ForecastFairness(){
-  const {t,user,leaks,leakAct,baseline}=useStore(); const {money}=useMoney();
-  const scn=baseline; const fc=useMemo(()=>buildForecast(scn),[]);
+  const {t,user,leaks,leakAct,baseline,settingsVals}=useStore(); const {money}=useMoney();
+  const scn=baseline; const fc=useMemo(()=>buildForecast(scn, settingsVals.set_earlyAlert||70),[settingsVals.set_earlyAlert]);
   const regions=useMemo(()=>fgByRegion(scn.FG, baseline.FG),[]);
   const [dim,setDim]=useState("region");
   const [view,setView]=useState("bar");
@@ -1781,16 +1793,6 @@ function ForecastFairness(){
             <C.Line type="monotone" dataKey="ceiling" stroke="#b3261e" strokeDasharray="5 4" strokeWidth={2} dot={false} name={t("budgetCeiling")} connectNulls/>
           </C.LineChart>
         </C.ResponsiveContainer>}
-      </div>
-    </Section>
-    <Section title={<span className="sect-right">{t("fairnessByRegion")}<InfoTip text={t("fml_fg")}/></span>}>
-      <div className="banner" style={{marginBottom:0,background:"var(--green-50)",cursor:"pointer",fontWeight:600}} onClick={()=>setRoute("fairness")}>
-        ⚖ {t("fairness_sub")} — <span style={{color:"var(--green-dark)",textDecoration:"underline"}}>{t("nav_fairness")}</span>
-      </div>
-    </Section>
-    <Section title={t("leakage")} sub={t("leak_routeHint")}>
-      <div className="banner" style={{marginBottom:0,background:"var(--amber-50)",cursor:"pointer",fontWeight:600}} onClick={()=>setRoute("fairness")}>
-        ⚖ {t("leak_cases")}: 188 · {t("nav_fairness")} → <span style={{color:"var(--green-dark)",textDecoration:"underline"}}>{t("nav_fairness")}</span>
       </div>
     </Section>
     <Section title={<span className="sect-right">{t("fc_stressTitle")}<InfoTip text={t("fc_stressTip")}/></span>} sub={t("fc_stressSub")}>
@@ -2011,7 +2013,7 @@ function OrchestrationChain({states}){
 
 /* ---- What-if — centerpiece ---- */
 function WhatIf(){
-  const {t,setRoute,addPackage,user,formulaParams,formulaVersion,setFormulaVersion,baseline}=useStore(); const {money}=useMoney();
+  const {t,setRoute,addPackage,user,formulaParams,formulaVersion,setFormulaVersion,baseline,whatifContext,setWhatifContext}=useStore(); const {money}=useMoney();
   const [p,setP]=useState({reallocatePct:0,capHighPct:0,boostLowPct:0,offPlanPct:0});
   const [nl,setNl]=useState("");
   const [chain,setChain]=useState(["idle","idle","idle","idle"]);
@@ -2021,6 +2023,14 @@ function WhatIf(){
   const [evP,setEvP]=useState(null);
   const [leverFlash,setLeverFlash]=useState(false);
   const [cmpMode,setCmpMode]=useState("dual"); // UC-09: dual = base vs current; triple = +recommended
+  // Consume whatifContext from Allocation page
+  useEffect(()=>{
+    if(whatifContext){
+      setNl(`针对 "${whatifContext.bandLabel}" 档优化支持方案 · 当前补贴 ${money(whatifContext.subsidy)} · HBR ${(whatifContext.hbr*100).toFixed(0)}%`);
+      setP(prev=>({...prev, boostLowPct: whatifContext.below?0.08:0, capHighPct: whatifContext.below?0:0.10 }));
+      setWhatifContext(null);
+    }
+  },[whatifContext]);
   // Determine if formula params are modified from default (the key "Test in What-if" use case)
   const formulaModified = formulaParams.ded!==40 || formulaParams.dur!==20 || formulaParams.rate!==4;
   const mortOverrides = formulaModified ? formulaParams : null;
@@ -2327,19 +2337,64 @@ function PackageCard({pkg}){
     </div>
   </div>);
 }
-function DecisionPackages({filter}){
-  const {t,packages}=useStore();
+function DecisionPackages({filter,showConfig}){
+  const {t,packages,configChanges,user,actOnConfigChange}=useStore();
   const list=packages.filter(filter||(()=>true));
+  // Config changes pending approval for this role
+  const pendingConfigs = showConfig ? configChanges.filter(c=>{
+    if(c.status!=="pending") return false;
+    if(showConfig==="owner") return !c.p03Required; // P-02 approves non-ministerial
+    if(showConfig==="minister") return c.p03Required; // Minister approves P-03 level
+    return false;
+  }) : [];
+  const [confirm,setConfirm]=useState(null);
+  function withConfirm(title,msg,fn,label,danger){
+    setConfirm({title,message:msg,onConfirm:()=>{setConfirm(null);fn();},confirmLabel:label,confirmDanger:danger});
+  }
   return (<div className="fade">
-    <PageHeader title={t("nav_packages")} sub={t("pkg_sub")} right={<AgentBadge name={t("agent_route")} lvl="L3"/>}/>
-    {list.length===0? <div className="card pad muted">{t("noItems")}</div>
-      : list.map(p=><PackageCard key={p.id} pkg={p}/>)}
+    <PageHeader title={showConfig==="minister"?t("nav_decisions"):t("nav_approvals")}
+      sub={showConfig==="minister"?t("cockpit_sub"):t("pkg_sub")}
+      right={<AgentBadge name={t("agent_route")} lvl="L3"/>}/>
+    {/* Config changes pending approval */}
+    {pendingConfigs.length>0 && <Section title={<span className="sect-right">{t("config_pending_config")}<span className="chip info" style={{fontSize:10,marginInlineStart:6}}>{pendingConfigs.length}</span></span>}>
+      {pendingConfigs.map(cc=>{
+        const statusLabel = cc.p03Required ? t("config_status_pending_short")+" · P-03" : t("config_status_pending_short");
+        return (<div key={cc.id} className="card pad" style={{marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+            <div>
+              <span className="wo">{cc.id}</span>
+              <span className="chip info" style={{marginInlineStart:6,fontSize:10}}>{statusLabel}</span>
+            </div>
+          </div>
+          <div style={{marginTop:6,fontWeight:600,fontSize:14}}>{cc.paramLabel}</div>
+          <div className="pkg-detail" style={{marginTop:6}}>
+            <div className="muted" style={{fontSize:12}}>{t("config_from_param")} <b>{cc.oldValue}{cc.unit}</b> → {t("config_to_param")} <b style={{color:"var(--primary)"}}>{cc.newValue}{cc.unit}</b></div>
+            {cc.reason && <div style={{fontSize:12.5,marginTop:4}}>📝 {cc.reason}</div>}
+            {cc.impactPreview && <div style={{fontSize:12,marginTop:2,color:"var(--muted)"}}>💡 {cc.impactPreview}</div>}
+            {cc.effectiveFrom && <div style={{fontSize:12,marginTop:2,color:"var(--muted)"}}>⏱ {t("config_effective_from")}: {cc.effectiveFrom}</div>}
+          </div>
+          <div style={{display:"flex",gap:6,marginTop:10}}>
+            <button className="btn sm" onClick={()=>withConfirm(t("config_confirm_approve_title"),t("config_confirm_approve_msg"),()=>actOnConfigChange(cc.id,"approve",window.prompt("Approval note (optional)")||""),t("approve"))}>✔ {t("approve")}</button>
+            <button className="btn danger sm" onClick={()=>withConfirm(t("config_confirm_reject_title"),t("config_confirm_reject_msg"),()=>actOnConfigChange(cc.id,"reject",window.prompt("Rejection reason")||""),t("reject"),true)}>✕ {t("reject")}</button>
+          </div>
+        </div>);
+      })}
+    </Section>}
+    {/* Regular packages */}
+    {pendingConfigs.length>0 && list.length>0 && <div className="divider"/>}
+    <Section title={t("nav_packages")}>
+      {list.length===0? <div className="card pad muted">{t("noItems")}</div>
+        : list.map(p=><PackageCard key={p.id} pkg={p}/>)}
+    </Section>
+    {confirm && <ConfirmModal title={confirm.title} message={confirm.message}
+      confirmLabel={confirm.confirmLabel} confirmDanger={confirm.confirmDanger}
+      onConfirm={confirm.onConfirm} onCancel={()=>setConfirm(null)}/>}
   </div>);
 }
 
 /* ---- Owner home ---- */
 function OwnerHome(){
-  const {t,packages,budget,setRoute,baseline}=useStore(); const {money}=useMoney();
+  const {t,packages,budget,configChanges,setRoute,baseline}=useStore(); const {money}=useMoney();
   const pending=packages.filter(p=>p.status==="submitted").length;
   const escalated=packages.filter(p=>p.status==="escalated").length;
   const totalBudget=budget.cash+budget.inkind+(budget.ceiling||0);
@@ -2368,6 +2423,15 @@ function OwnerHome(){
         {pending>3 && <div className="muted" style={{fontSize:12}}>+ {pending-3} {t("more")}</div>}
       </div> : <div className="muted">{t("noItems")}</div>}
     </Section>
+    {configChanges.filter(c=>c.status==="pending"||c.status==="draft").length>0&&<Section title={<span className="sect-right">{t("config_pending_config")}<span className="chip info" style={{fontSize:10,marginInlineStart:6}}>{configChanges.filter(c=>c.status==="pending").length}</span></span>} right={<button className="btn sm" onClick={()=>setRoute("approvals")}>{t("config_view_all")} {ArrowIcon}</button>}>
+      {configChanges.filter(c=>c.status==="pending").slice(0,3).map(cc=>
+        <div key={cc.id} className="card pad" style={{marginBottom:8,cursor:"pointer"}} onClick={()=>setRoute("approvals")}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span><span className="wo">{cc.id}</span> <strong>{cc.paramLabel}</strong> <span className="muted" style={{fontSize:12}}>{t("config_from_param")} {cc.oldValue}{cc.unit} → {cc.newValue}{cc.unit}</span></span>
+            <span className="chip info" style={{fontSize:10}}>{t("config_status_pending_short")}</span>
+          </div>
+        </div>)}
+    </Section>}
     <Section title={t("scenarios")} right={<span className="chip gray" style={{fontSize:10}}>{t("nav_home")}</span>}>
       <div className="cols-3">
         {[{icon:"cycle",title:t("scenario_cycle_title"),desc:t("scenario_cycle_desc"),tag:t("tag_monthly"),steps:[["nav_data","data"],["nav_alloc","alloc"],["nav_forecast","forecast"]], start:"alloc",btn:t("scenario_cycle_start")},
@@ -2395,7 +2459,7 @@ function OwnerHome(){
 
 /* ---- Minister cockpit ---- */
 function MinisterHome(){
-  const {t,packages,budget,setRoute,baseline}=useStore(); const {money}=useMoney();
+  const {t,packages,budget,configChanges,setRoute,baseline}=useStore(); const {money}=useMoney();
   const approved=packages.filter(p=>p.status==="approved"||p.status==="adjudicated");
   const totalSavings=approved.reduce((s,p)=>s+p.kpis.savingsPhase,0);
   const pending=packages.filter(p=>p.status==="escalated").length;
@@ -2444,6 +2508,15 @@ function MinisterHome(){
         {pending>3 && <div className="muted" style={{fontSize:12}}>+ {pending-3} {t("more")}</div>}
       </div> : <div className="muted">{t("noItems")}</div>}
     </Section>
+    {configChanges.filter(c=>c.p03Required&&c.status==="pending").length>0&&<Section title={<span className="sect-right">{t("config_pending_config")}<span className="chip info" style={{fontSize:10,marginInlineStart:6}}>{configChanges.filter(c=>c.p03Required&&c.status==="pending").length}</span></span>} right={<button className="btn sm" onClick={()=>setRoute("decisions")}>{t("config_view_all")} {ArrowIcon}</button>}>
+      {configChanges.filter(c=>c.p03Required&&c.status==="pending").slice(0,3).map(cc=>
+        <div key={cc.id} className="card pad" style={{marginBottom:8,cursor:"pointer"}} onClick={()=>setRoute("decisions")}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span><span className="wo">{cc.id}</span> <strong>{cc.paramLabel}</strong> <span className="muted" style={{fontSize:12}}>{t("config_from_param")} {cc.oldValue}{cc.unit} → {cc.newValue}{cc.unit}</span></span>
+            <span className="chip info" style={{fontSize:10}}>{t("config_status_pending_short")}</span>
+          </div>
+        </div>)}
+    </Section>}
     <Section title={t("scenarios")} right={<span className="chip gray" style={{fontSize:10}}>{t("nav_home")}</span>}>
       <div className="cols-3">
         {[{icon:"cycle",title:t("scenario_cycle_title"),desc:t("scenario_cycle_desc"),tag:t("tag_monthly"),steps:[["nav_data","data"],["nav_alloc","alloc"],["nav_forecast","forecast"]], start:"forecast",btn:t("scenario_cycle_start")},
@@ -2475,6 +2548,21 @@ function Modal({title,onClose,children}){
     <div className="modal-box fade" onClick={e=>e.stopPropagation()}>
       <div className="modal-head"><h3>{title}</h3><button className="modal-x" onClick={onClose} aria-label="close">✕</button></div>
       <div className="modal-body">{children}</div>
+    </div>
+  </div>);
+}
+function ConfirmModal({title,message,confirmLabel,cancelLabel,onConfirm,onCancel,confirmDanger}){
+  const {t}=useStore();
+  return (<div className="modal-ov" onClick={onCancel}>
+    <div className="modal-box fade" onClick={e=>e.stopPropagation()} style={{width:420}}>
+      <div className="modal-head"><h3>{title}</h3><button className="modal-x" onClick={onCancel}>✕</button></div>
+      <div className="modal-body">
+        <div style={{fontSize:14,lineHeight:1.7,marginBottom:20,color:"var(--ink)"}}>{message}</div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+          <button className="btn secondary" onClick={onCancel}>{cancelLabel||t("back")}</button>
+          <button className={confirmDanger?"btn danger":"btn"} onClick={onConfirm}>{confirmLabel||t("approve")}</button>
+        </div>
+      </div>
     </div>
   </div>);
 }
@@ -2524,7 +2612,7 @@ function AuditTrailPage(){
   const {t,audit,packages}=useStore(); const {money}=useMoney();
   const [sel,setSel]=useState(null); const [cat,setCat]=useState("all");
   const filtered = cat==="all" ? audit : audit.filter(a=>a.cat===cat);
-  const CATS=[["all","audit_catAll"],["pkg","audit_catPkg"],["formula","audit_catFormula"],["threshold","audit_catThreshold"],["ref","audit_catRef"],["fair","audit_catFair"],["whatif","audit_catWhatif"]];
+  const CATS=[["all","audit_catAll"],["pkg","audit_catPkg"],["formula","audit_catFormula"],["threshold","audit_catThreshold"],["ref","audit_catRef"],["fair","audit_catFair"],["whatif","audit_catWhatif"],["config","audit_catConfig"]];
   const auditTarget = sel ? audit.find(a=>a.target===sel) : null;
   const pkg = auditTarget?.cat==="pkg" ? packages.find(p=>p.id===sel) : null;
   const levers = pkg ? leverSummary(t,pkg.params||{}) : [];
@@ -2773,6 +2861,7 @@ I18N.zh = {
   forecast_sub:"12 个月支出预测与预算上限，加多维公平性差距与漏损。",
   fc_stressTitle:"压力情景分析", fc_stressSub:"3 种自动压力情景", fc_stressTip:"预测引擎自动产生的 3 种压力情景",
   fc_stressScenario:"情景", fc_stressImpact:"影响", fc_stressNote:"说明", fc_stressBr:"系统自动产生以上 3 种压力情景",
+  supportType:"支持类型", st_monthly:"月付", st_package:"一次性", st_mix:"混合",
   fc_stressRate:"利率 +2%", fc_stressRateNote:"利率提高 2% 增加长期负债",
   fc_stressExit:"退出减少 50%", fc_stressExitNote:"早期退出减少可释放部分预算",
   fc_stressNew:"新增合同 +20%", fc_stressNewNote:"新增合同增加未来承诺",
@@ -2966,6 +3055,34 @@ function seedAudit(){
     {role:"analyst", action:"act_whatif", target:"WI-2026-002", status:"recorded", ts:"30 May 14:20", note:"Off-plan restrict 12% · cap high 15% · savings +⃁ 18.2M", cat:"whatif"},
   ];
   return [...pkgAudit,...ext].reverse();
+}
+
+/* ===== Config Changes seed ===== */
+function seedConfigChanges(){
+  const now=()=>{ const d=new Date(); return d.getDate()+" "+["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()]+" "+d.getHours().toString().padStart(2,"0")+":"+d.getMinutes().toString().padStart(2,"0"); };
+  return [
+    { id:"CC-001", status:"draft", paramKey:"set_earlyAlert", paramLabel:"Early budget alert",
+      oldValue:70, newValue:65, unit:"%",
+      effectiveFrom:"", reason:"Current spending trajectory approaching 70% early; lowering threshold to detect risk sooner.",
+      createdAt:"09 Jul 14:10", submittedBy:"analyst", approvedBy:null,
+      impactPreview:"Earlier warning by ~2 weeks. Budget utilization at 63% vs 68%.",
+      history:[{role:"analyst",action:"act_submit",ts:"09 Jul 14:10",note:""}],
+      affects:"Budget forecast", p03Required:false },
+    { id:"CC-002", status:"draft", paramKey:"set_minThresh", paramLabel:"Ministerial escalation (redistribution)",
+      oldValue:20, newValue:15, unit:"%",
+      effectiveFrom:"", reason:"Recommend lowering escalation threshold to give Minister earlier visibility on reallocation decisions.",
+      createdAt:"09 Jul 13:45", submittedBy:"analyst", approvedBy:null,
+      impactPreview:"More decisions will require Minister approval. Fewer reallocations above 15% bypass review.",
+      history:[{role:"analyst",action:"act_submit",ts:"09 Jul 13:45",note:""}],
+      affects:"Reallocation, Decisions", p03Required:true },
+    { id:"CC-003", status:"scheduled", paramKey:"set_hbrCeil", paramLabel:"HBR ceiling",
+      oldValue:38, newValue:35, unit:"%",
+      effectiveFrom:"01 Aug 2026 00:00", reason:"Align HBR ceiling with 2030 target trajectory.",
+      createdAt:"08 Jul 09:20", submittedBy:"analyst", approvedBy:"owner",
+      impactPreview:"HBR target tightened from 38% to 35%. ~8% more beneficiaries flagged for review.",
+      history:[{role:"analyst",action:"act_submit",ts:"08 Jul 09:20",note:""},{role:"owner",action:"act_approve",ts:"08 Jul 14:30",note:"Approved — aligns with 2030 targets"}],
+      affects:"Allocation, Beneficiary, What-if", p03Required:false },
+  ];
 }
 
 /* ===== UC-05 Beneficiary Status Tracking (referral list) ===== */
@@ -3590,16 +3707,91 @@ const SETTINGS_GROUPS=[
   {g:"set_g_hbr", at:"2026-06-15 10:09", items:[{k:"set_hbrCeil",v:38,unit:"%",hint:"30–50",affects:"Allocation, Beneficiary, What-if"}]},
   {g:"set_g_mon", at:"2026-06-15 10:09", items:[{k:"set_demandChg",v:15,unit:"%",hint:"0–100",affects:"Impact attribution"},{k:"set_improveDur",v:3,unit:"mo",hint:"1–12",affects:"Beneficiary"}]},
 ];
+function initSettingsVals(){ const o={}; SETTINGS_GROUPS.forEach(g=>g.items.forEach(it=>o[it.k]=it.v)); return o; }
 function SettingsPage(){
-  const {t,user}=useStore(); const editable=user!=="minister";
-  const [vals,setVals]=useState(()=>{ const o={}; SETTINGS_GROUPS.forEach(g=>g.items.forEach(it=>o[it.k]=it.v)); return o; });
+  const {t,user,configChanges,addConfigChange,submitConfigChange,actOnConfigChange,settingsVals,setSettingVal}=useStore();
+  const editable=user!=="minister";
+  const [tab,setTab]=useState("current");
   const [saved,setSaved]=useState(false);
+  // Schedule change modal state
+  const [modal,setModal]=useState(null); // { paramKey, paramLabel, oldValue, unit, affects, p03Required }
+  const [newVal,setNewVal]=useState("");
+  const [reason,setReason]=useState("");
+  const [effectiveFrom,setEffectiveFrom]=useState("");
+  const [impactPreview,setImpactPreview]=useState("");
+  // Confirm modal state
+  const [confirm,setConfirm]=useState(null); // { title, message, onConfirm, confirmLabel, confirmDanger }
+  const [detailCc,setDetailCc]=useState(null); // config change detail modal
+  function withConfirm(title,message,onConfirm,confirmLabel,confirmDanger){
+    setConfirm({ title, message, onConfirm:()=>{ setConfirm(null); onConfirm(); }, confirmLabel, confirmDanger });
+  }
+  function openSchedule(param){
+    setModal({ paramKey:param.k, paramLabel:t(param.k), oldValue:param.v, unit:param.unit, affects:param.affects, p03Required:!!param.p03 });
+    setNewVal(String(param.v));
+    setReason("");
+    setEffectiveFrom("");
+    setImpactPreview("");
+  }
+  function saveDraftSchedule(){
+    if(!modal) return;
+    withConfirm(t("config_confirm_draft_title"), t("config_confirm_draft_msg"), ()=>{
+      const ccData={
+        paramKey:modal.paramKey, paramLabel:t(modal.paramKey),
+        oldValue:modal.oldValue, newValue:parseFloat(newVal), unit:modal.unit,
+        effectiveFrom:effectiveFrom||"",
+        reason:reason.trim(), impactPreview:impactPreview.trim()||t("config_impact_preview")+"…",
+        affects:modal.affects, p03Required:modal.p03Required||false,
+      };
+      addConfigChange(ccData);
+      setModal(null);
+      setSaved(false);
+    }, t("config_confirm_save_draft"));
+  }
+  function submitSchedule(){
+    if(!modal || !reason.trim()) return;
+    withConfirm(t("config_confirm_submit_title"), t("config_confirm_submit_msg"), ()=>{
+      saveDraftScheduleInner();
+      const newId="CC-"+(String(configChanges.length+1).padStart(3,"0"));
+      submitConfigChange(newId);
+    }, t("config_confirm_submit"));
+  }
+  // Internal: save without confirm (called by submitSchedule after confirm)
+  function saveDraftScheduleInner(){
+    if(!modal) return;
+    const ccData={
+      paramKey:modal.paramKey, paramLabel:t(modal.paramKey),
+      oldValue:modal.oldValue, newValue:parseFloat(newVal), unit:modal.unit,
+      effectiveFrom:effectiveFrom||"",
+      reason:reason.trim(), impactPreview:impactPreview.trim()||t("config_impact_preview")+"…",
+      affects:modal.affects, p03Required:modal.p03Required||false,
+    };
+    addConfigChange(ccData);
+    setModal(null);
+    setSaved(false);
+  }
+  // Status chip helper
+  function statusChip(s){
+    const map={draft:"gray", pending:"info", scheduled:"amber", effective:"", superseded:"gray", rejected:"danger"};
+    const key="config_status_"+s;
+    return <span className={"chip "+(map[s]||"")} style={{fontSize:11}}>{t(key)}</span>;
+  }
+  // Pending count for owner
+  const pendingConfig = configChanges.filter(c=>c.status==="pending"&&user==="owner").length;
+  const draftConfig = configChanges.filter(c=>c.status==="draft").length;
+
   return (<div className="fade">
     {saved&&<div className="banner" style={{marginBottom:10}}>✓ {t("set_saved")}</div>}
-    <PageHeader title={t("nav_settings")} sub={t("set_sub")} right={editable?<button className="btn sm" onClick={()=>setSaved(true)}>💾 {t("set_save")}</button>:<span className="chip gray">{t("set_readonly")}</span>}/>
+    <PageHeader title={t("nav_settings")} sub={t("set_sub")} right={
+      <div style={{display:"flex",gap:6}}>
+        <button className={"btn sm "+(tab==="current"?"":"secondary")} onClick={()=>setTab("current")}>{t("config_tab_current")}</button>
+        <button className={"btn sm "+(tab==="changes"?"":"secondary")} onClick={()=>setTab("changes")}>{t("config_tab_changes")}{pendingConfig?<span className="badge-count" style={{marginInlineStart:4}}>{pendingConfig}</span>:draftConfig?<span className="chip gray" style={{marginInlineStart:4}}>{draftConfig}</span>:null}</button>
+      </div>
+    }/>
+
+    {tab==="current" && <>
     <div className="card pad" style={{padding:"8px 16px"}}>
       <table className="tbl" style={{fontSize:12.5}}><thead><tr>
-        <th style={{width:140}}>{t("set_g")}</th><th>{t("set_param")}</th><th style={{width:70}}>{t("set_affects")}</th><th style={{width:100}}></th><th style={{width:80,textAlign:"end"}}>{t("set_val")}</th><th style={{width:110}}></th>
+        <th style={{width:140}}>{t("set_g")}</th><th>{t("set_param")}</th><th style={{width:70}}>{t("set_affects")}</th><th style={{width:100}}></th><th style={{width:80,textAlign:"end"}}>{t("set_val")}</th><th style={{width:160}}></th>
       </tr></thead><tbody>
         {SETTINGS_GROUPS.flatMap((grp,gi)=>grp.items.map((it,ii)=>(
           <tr key={it.k}>
@@ -3607,9 +3799,12 @@ function SettingsPage(){
             <td><span style={{fontWeight:600}}>{t(it.k)}</span><br/><span className="muted" style={{fontSize:11}}>{it.hint}{it.unit?(" · "+it.unit):""}</span></td>
             <td><span className="chip gray" style={{fontSize:10}}>{it.affects.split(", ").map(a=>t("area_"+a.toLowerCase().replace(/[\s-]/g,"_"))).join(", ")}</span></td>
             <td>{it.p03?<span className="chip info" style={{fontSize:10}}>P-03 {t("set_p03r")}</span>:null}</td>
-            <td className="right-num mono" style={{fontWeight:700,fontSize:14}}>{vals[it.k]}{it.unit}</td>
-            <td><input className="input mono" style={{width:100,textAlign:"end"}} type="number" value={vals[it.k]} disabled={!editable}
-              onChange={e=>{setVals({...vals,[it.k]:e.target.value}); setSaved(false);}}/></td>
+            <td className="right-num mono" style={{fontWeight:700,fontSize:14}}>{settingsVals[it.k]}{it.unit}</td>
+            <td style={{textAlign:"end"}}>
+              <button className="btn ghost sm" style={{fontSize:11,whiteSpace:"nowrap"}} onClick={()=>openSchedule(it)} disabled={!editable}>
+                ⏱ {t("config_schedule_change")}
+              </button>
+            </td>
           </tr>
         )))}
       </tbody></table>
@@ -3623,6 +3818,112 @@ function SettingsPage(){
         <li><b>5.</b> {t("set_br05")}</li>
       </ul></div>
     </Section>
+    </>}
+
+    {tab==="changes" && <>
+    {configChanges.length===0
+      ? <div className="card pad muted">{t("config_no_changes")}</div>
+      : <div className="card pad" style={{padding:"8px 0"}}>
+          <table className="tbl" style={{fontSize:12.5}}><thead><tr>
+            <th>{t("config_change_id")}</th><th>{t("set_param")}</th><th>{t("config_from_param")}</th><th>{t("config_to_param")}</th>
+            <th>{t("config_status_draft_short")}</th><th>{t("config_scheduled_at")}</th><th>{t("config_by")}</th><th></th>
+          </tr></thead><tbody>
+            {configChanges.map(cc=>{
+              const paramLabel = t(cc.paramKey);
+              return (<tr key={cc.id} style={{cursor:"pointer"}} onClick={()=>setDetailCc(cc)}>
+                <td className="mono"><span className="wo">{cc.id}</span></td>
+                <td style={{fontSize:12}}>{cc.paramLabel}</td>
+                <td className="right-num mono muted">{cc.oldValue}{cc.unit}</td>
+                <td className="right-num mono" style={{fontWeight:700,color:"var(--primary)"}}>{cc.newValue}{cc.unit}</td>
+                <td>{statusChip(cc.status)}</td>
+                <td className="muted" style={{fontSize:12,whiteSpace:"nowrap"}}>{cc.effectiveFrom||"—"}</td>
+                <td className="muted" style={{fontSize:12}}>{cc.submittedBy}</td>
+                <td onClick={e=>e.stopPropagation()}>
+                  {cc.status==="draft"&&user==="analyst"&&
+                    <button className="btn sm" style={{fontSize:11,whiteSpace:"nowrap"}} onClick={()=>withConfirm(t("config_confirm_submit_title"),t("config_confirm_submit_msg"),()=>submitConfigChange(cc.id),t("config_confirm_submit"))}>↑ {t("config_submit")}</button>}
+                  {cc.status==="pending"&&(user==="owner"||user==="minister")&&
+                    <span className="chip info" style={{fontSize:10}}>{t("config_awaiting")} · {t("nav_approvals")}</span>}
+                </td>
+              </tr>);
+            })}
+          </tbody></table>
+        </div>}
+    </>}
+
+    {/* Schedule Change Modal */}
+    {modal && <div className="modal-ov" onClick={()=>setModal(null)}>
+      <div className="modal-box" onClick={e=>e.stopPropagation()} style={{width:560}}>
+        <div className="modal-head">
+          <h3>⏱ {t("config_schedule_change")}</h3>
+          <button className="modal-x" onClick={()=>setModal(null)}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div style={{marginBottom:16}}>
+            <div className="muted" style={{fontSize:12,marginBottom:4}}>{t("set_param")}</div>
+            <div style={{fontWeight:700,fontSize:16}}>{t(modal.paramKey)}</div>
+            <div style={{fontSize:13,color:"var(--muted)",marginTop:2}}>{t("config_from_param")} <b>{modal.oldValue}{modal.unit}</b></div>
+            {modal.p03Required && <div className="chip info" style={{marginTop:6}}>P-03 {t("set_p03r")}</div>}
+          </div>
+          <div className="field"><label>{t("config_to_param")} <span className="muted">({modal.unit})</span></label>
+            <input className="input mono" type="number" value={newVal} onChange={e=>setNewVal(e.target.value)} step={modal.unit==="%"?"1":"any"}/></div>
+          <div className="field"><label>{t("config_reason")}</label>
+            <textarea className="input" style={{minHeight:60,resize:"vertical"}} value={reason} onChange={e=>setReason(e.target.value)} placeholder={t("config_reason")+"…"}/></div>
+          <div className="field"><label>{t("config_effective_from")}</label>
+            <input className="input" type="text" value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)}
+              placeholder="e.g. 01 Aug 2026 00:00 (leave empty for immediate on approval)"/></div>
+          <div className="field"><label>{t("config_impact_preview")}</label>
+            <textarea className="input" style={{minHeight:50,resize:"vertical"}} value={impactPreview} onChange={e=>setImpactPreview(e.target.value)}
+              placeholder={t("config_impact_preview")+"… (e.g. Earlier warning by ~2 weeks)"}/></div>
+          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+            <button className="btn secondary" onClick={()=>setModal(null)}>{t("back")}</button>
+            <button className="btn ghost sm" onClick={saveDraftSchedule} disabled={!newVal.trim()}>💾 {t("set_save")} {t("config_status_draft_short")}</button>
+            <button className="btn" onClick={submitSchedule} disabled={!reason.trim()}>↑ {t("config_submit")}</button>
+          </div>
+        </div>
+      </div>
+    </div>}
+    {detailCc && <Modal title={detailCc.paramLabel+" · "+detailCc.id} onClose={()=>setDetailCc(null)}>
+      <div className="pkg-detail" style={{marginBottom:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span className="wo">{detailCc.id}</span>
+            {statusChip(detailCc.status)}
+          </div>
+          <div className="muted" style={{fontSize:12}}>{t("config_from_param")} <b>{detailCc.oldValue}{detailCc.unit}</b></div>
+        </div>
+        <div className="muted" style={{fontSize:12}}>{t("config_to_param")} <b style={{color:"var(--primary)",fontWeight:700}}>{detailCc.newValue}{detailCc.unit}</b></div>
+        {detailCc.p03Required && <div className="chip info" style={{marginTop:6}}>P-03 {t("set_p03r")}</div>}
+      </div>
+      {detailCc.reason && <div className="pkg-detail" style={{marginBottom:14}}>
+        <div className="muted" style={{fontSize:12,marginBottom:4}}>📝 {t("config_reason")}</div>
+        <div style={{fontSize:13,lineHeight:1.6}}>{detailCc.reason}</div>
+      </div>}
+      {detailCc.impactPreview && <div className="pkg-detail" style={{marginBottom:14}}>
+        <div className="muted" style={{fontSize:12,marginBottom:4}}>💡 {t("config_impact_preview")}</div>
+        <div style={{fontSize:13,lineHeight:1.6}}>{detailCc.impactPreview}</div>
+      </div>}
+      {detailCc.effectiveFrom && <div className="pkg-detail" style={{marginBottom:14}}>
+        <div className="muted" style={{fontSize:12}}>⏱ {t("config_effective_from")}: <b>{detailCc.effectiveFrom}</b></div>
+      </div>}
+      {detailCc.history.length>0 && <div className="pkg-detail" style={{marginBottom:0}}>
+        <div className="muted" style={{fontSize:12,marginBottom:8}}>{t("nav_audit")}</div>
+        <div className="timeline">
+          {detailCc.history.map((h,i)=>(
+            <div key={i} className="ev">
+              <div style={{fontSize:12.5}}>
+                <span className="tag">{t(h.role)}</span>
+                <b>{t(h.action)}</b>
+                {h.note ? <span style={{color:"var(--muted)",fontWeight:400}}> · {h.note}</span> : null}
+              </div>
+              <div className="muted" style={{fontSize:11}}>{h.ts}</div>
+            </div>
+          ))}
+        </div>
+      </div>}
+    </Modal>}
+    {confirm && <ConfirmModal title={confirm.title} message={confirm.message}
+      confirmLabel={confirm.confirmLabel} confirmDanger={confirm.confirmDanger}
+      onConfirm={confirm.onConfirm} onCancel={()=>setConfirm(null)}/>}
   </div>);
 }
 
@@ -3712,6 +4013,27 @@ Object.assign(I18N.en,{ nav_settings:"Settings", nav_formula:"Subsidy Formula",
   set_g:"Group", set_param:"Parameter", set_val:"Value",
   set_brTitle:"Governance rules for settings", set_brSub:"These rules apply to all threshold changes in this panel",
   set_br01:"All threshold changes are tracked in the Audit Trail — no changes are anonymous.", set_br02:"Modified thresholds take effect immediately upon approval — no batch window.", set_br03:"P-03 (Minister) must approve changes to escalation thresholds (#5) and Minister deadline (#7) - P-02 can enter but cannot activate without P-03 sign-off.", set_br04:"Settings history is append-only — previous values are always retrievable.", set_br05:"Threshold change audit records include: old value → new value, who changed it, when, and which UC(s) are affected.",
+  // config changes
+  config_tab_current:"Current", config_tab_changes:"Change History",
+  config_schedule_change:"Schedule Change", config_change_id:"CC",
+  config_effective_from:"Effective from", config_reason:"Reason for change",
+  config_impact_preview:"Impact preview", config_submit:"Submit for approval",
+  config_status_draft:"Draft", config_status_pending:"Pending approval",
+  config_status_scheduled:"Scheduled", config_status_effective:"Effective",
+  config_status_superseded:"Superseded", config_status_rejected:"Rejected",
+  config_no_changes:"No change history yet", config_from_param:"from", config_to_param:"to",
+  config_pending_config:"Pending config changes", config_view_all:"View all",
+  config_scheduled_at:"Scheduled at", config_by:"by",
+  config_pending_approval:"Pending approval", config_awaiting:"Awaiting approval",
+  config_draft_sub:"Changes you have drafted and not yet submitted",
+  config_status_draft_short:"Draft", config_status_pending_short:"Pending",
+  config_status_scheduled_short:"Scheduled", config_status_effective_short:"Active",
+  config_status_rejected_short:"Rejected",
+  config_confirm_draft_title:"Save as draft?", config_confirm_draft_msg:"This change will be saved as a draft. You can submit it for approval later.",
+  config_confirm_submit_title:"Submit for approval?", config_confirm_submit_msg:"This change will be submitted for P-02 (Business Owner) approval. Continue?",
+  config_confirm_approve_title:"Approve this change?", config_confirm_approve_msg:"The change will take effect according to the scheduled time. Continue?",
+  config_confirm_reject_title:"Reject this change?", config_confirm_reject_msg:"The change will be rejected and returned to the analyst. Continue?",
+  config_confirm_submit:"Submit", config_confirm_save_draft:"Save draft",
   set_g_dq:"Data quality", set_g_budget:"Budget thresholds", set_g_budgetC:"Budget constants", set_g_esc:"Escalation & time limits", set_g_fair:"Fairness gap", set_g_hbr:"Housing burden (HBR)", set_g_mon:"Monitoring thresholds",
   set_minComplete:"Minimum data completeness", set_earlyAlert:"Early budget alert", set_critAlert:"Critical budget alert", set_annual:"Annual budget (SAR M)", set_eligible:"Total eligible population", set_minThresh:"Ministerial escalation (redistribution)", set_boTime:"Business Owner response time", set_minTime:"Minister escalation deadline", set_fgMin:"Fairness Gap minimum acceptable", set_hbrCeil:"HBR ceiling", set_demandChg:"Significant change in demand", set_improveDur:"Improvement duration for HBR",
   f_sub:"The formulas behind the engine — with worked examples",
@@ -3743,6 +4065,26 @@ Object.assign(I18N.zh,{ nav_settings:"设置", nav_formula:"补贴公式",
   set_g:"分组", set_param:"参数", set_val:"当前值",
   set_brTitle:"设置治理规则", set_brSub:"以下规则适用于本页面的所有阈值修改",
   set_br01:"所有阈值修改均记录在审计轨迹中 — 无匿名修改。", set_br02:"修改的阈值在批准后立即生效 — 无批处理窗口。", set_br03:"P-03（部长）必须审批升级阈值（#5）和部长截止时间（#7）的修改 — P-02 可录入但不能在部长批准前激活。", set_br04:"设置历史仅追加 — 先前值始终可追溯。", set_br05:"阈值变更审计记录包含：旧值→新值、修改人、时间、影响的 UC。",
+  config_tab_current:"当前配置", config_tab_changes:"变更历史",
+  config_schedule_change:"排期变更", config_change_id:"CC",
+  config_effective_from:"生效时间", config_reason:"变更理由",
+  config_impact_preview:"影响预览", config_submit:"提交审批",
+  config_status_draft:"草稿", config_status_pending:"待审批",
+  config_status_scheduled:"已排期", config_status_effective:"已生效",
+  config_status_superseded:"已取代", config_status_rejected:"已驳回",
+  config_no_changes:"暂无变更记录", config_from_param:"从", config_to_param:"到",
+  config_pending_config:"待审批的配置变更", config_view_all:"查看全部",
+  config_scheduled_at:"计划生效", config_by:"操作人",
+  config_pending_approval:"待审批", config_awaiting:"等待审批",
+  config_draft_sub:"你已起草但未提交的变更",
+  config_status_draft_short:"草稿", config_status_pending_short:"待审批",
+  config_status_scheduled_short:"已排期", config_status_effective_short:"已生效",
+  config_status_rejected_short:"已驳回",
+  config_confirm_draft_title:"保存草稿？", config_confirm_draft_msg:"变更将以草稿形式保存，之后可提交审批。",
+  config_confirm_submit_title:"提交审批？", config_confirm_submit_msg:"变更将提交给 P-02（业务负责人）审批，确认提交？",
+  config_confirm_approve_title:"通过此变更？", config_confirm_approve_msg:"变更将按排期时间生效，确认通过？",
+  config_confirm_reject_title:"驳回此变更？", config_confirm_reject_msg:"变更将被驳回并退回给分析师，确认驳回？",
+  config_confirm_submit:"提交审批", config_confirm_save_draft:"保存草稿",
   set_g_dq:"数据质量", set_g_budget:"预算阈值", set_g_budgetC:"预算常量", set_g_esc:"升级与时限", set_g_fair:"公平性差距", set_g_hbr:"住房负担 (HBR)", set_g_mon:"监测阈值",
   set_minComplete:"最低数据完整度", set_earlyAlert:"预算预警(早期)", set_critAlert:"预算预警(严重)", set_annual:"年度预算 (SAR M)", set_eligible:"合格总人口", set_minThresh:"部长升级阈值(再分配)", set_boTime:"业务负责人响应时限", set_minTime:"部长升级截止", set_fgMin:"公平差距最低可接受", set_hbrCeil:"HBR 上限", set_demandChg:"需求显著变化", set_improveDur:"HBR 改善持续",
   f_sub:"引擎背后的公式 —— 附算例",
@@ -3769,6 +4111,26 @@ Object.assign(I18N.ar,{ nav_settings:"الإعدادات", nav_formula:"صيغة
   set_g:"المجموعة", set_param:"المعامل", set_val:"القيمة",
   set_brTitle:"قواعد حوكمة الإعدادات", set_brSub:"تنطبق هذه القواعد على جميع تغييرات العتبات في هذه اللوحة",
   set_br01:"جميع تغييرات العتبات مسجلة في سجل التدقيق — لا توجد تغييرات مجهولة.", set_br02:"تسري العتبات المعدلة فوراً بعد الموافقة — لا نافذة دفعة.", set_br03:"يجب على الوزير (P-03) الموافقة على تغييرات عتبات التصعيد (#5) ومهلة الوزير (#7) — يمكن لـ P-02 الإدخال لكن لا يمكن التفعيل دون موافقة P-03.", set_br04:"سجل الإعدادات للإلحاق فقط — القيم السابقة قابلة للاسترجاع دائماً.", set_br05:"تتضمن سجلات تدقيق تغيير العتبات: القيمة القديمة ← القيمة الجديدة، من غيّرها، متى، وأي حالات استخدام متأثرة.",
+  config_tab_current:"الحالي", config_tab_changes:"سجل التغييرات",
+  config_schedule_change:"جدولة تغيير", config_change_id:"CC",
+  config_effective_from:"يسري من", config_reason:"سبب التغيير",
+  config_impact_preview:"معاينة التأثير", config_submit:"تقديم للموافقة",
+  config_status_draft:"مسودة", config_status_pending:"بانتظار الموافقة",
+  config_status_scheduled:"مجدول", config_status_effective:"ساري المفعول",
+  config_status_superseded:"مستبدل", config_status_rejected:"مرفوض",
+  config_no_changes:"لا يوجد سجل تغييرات بعد", config_from_param:"من", config_to_param:"إلى",
+  config_pending_config:"تغييرات إعدادات معلقة", config_view_all:"عرض الكل",
+  config_scheduled_at:"مجدول في", config_by:"بواسطة",
+  config_pending_approval:"بانتظار الموافقة", config_awaiting:"في انتظار الاعتماد",
+  config_draft_sub:"التغييرات التي أعددتها ولم ترسلها بعد",
+  config_status_draft_short:"مسودة", config_status_pending_short:"معلق",
+  config_status_scheduled_short:"مجدول", config_status_effective_short:"نشط",
+  config_status_rejected_short:"مرفوض",
+  config_confirm_draft_title:"حفظ كمسودة؟", config_confirm_draft_msg:"سيتم حفظ التغيير كمسودة. يمكنك تقديمه للموافقة لاحقاً.",
+  config_confirm_submit_title:"تقديم للموافقة؟", config_confirm_submit_msg:"سيتم تقديم التغيير لموافقة P-02 (مالك الأعمال). هل تريد المتابعة؟",
+  config_confirm_approve_title:"اعتماد هذا التغيير؟", config_confirm_approve_msg:"سيصبح التغيير سارياً وفقاً للوقت المجدول. هل تريد المتابعة؟",
+  config_confirm_reject_title:"رفض هذا التغيير؟", config_confirm_reject_msg:"سيتم رفض التغيير وإعادته للمحلل. هل تريد المتابعة؟",
+  config_confirm_submit:"تقديم", config_confirm_save_draft:"حفظ مسودة",
   set_g_dq:"جودة البيانات", set_g_budget:"عتبات الميزانية", set_g_budgetC:"ثوابت الميزانية", set_g_esc:"التصعيد والمهل", set_g_fair:"فجوة العدالة", set_g_hbr:"عبء السكن (HBR)", set_g_mon:"عتبات المراقبة",
   set_minComplete:"الحد الأدنى لاكتمال البيانات", set_earlyAlert:"تنبيه ميزانية مبكر", set_critAlert:"تنبيه ميزانية حرج", set_annual:"الميزانية السنوية (SAR M)", set_eligible:"إجمالي السكان المؤهلين", set_minThresh:"عتبة تصعيد الوزير (إعادة التوزيع)", set_boTime:"مهلة رد مالك الأعمال", set_minTime:"مهلة تصعيد الوزير", set_fgMin:"الحد الأدنى المقبول لفجوة العدالة", set_hbrCeil:"سقف HBR", set_demandChg:"تغيّر كبير في الطلب", set_improveDur:"مدة تحسّن HBR",
   f_sub:"الصيغ خلف المحرك — مع أمثلة محلولة",
@@ -3929,6 +4291,9 @@ function App(){
   const [budget,setBudget]=useState({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18});
   const [formulaParams,setFormulaParams]=useState({ded:40,dur:20,ceil:500000,rate:4});
   const [formulaVersion,setFormulaVersion]=useState({validated:false,canActivate:false,approvedPkgId:null,active:"v1.0",lastValidated:null});
+  const [whatifContext,setWhatifContext]=useState(null);
+  const [settingsVals,setSettingsVals]=useState(initSettingsVals());
+  const [configChanges,setConfigChanges]=useState(seedConfigChanges);
   // Dynamic baseline: reacts to formula activation. When v1.1 is active, allocation recomputes with formula params.
   const baseline = useMemo(() => {
     if (formulaVersion?.active === "v1.1") {
@@ -3972,9 +4337,44 @@ function App(){
     setLeaks(prev=>prev.map(l=>l.id===id?{...l,status,history:[...l.history,{role,kind,ts,note:note||""}]}:l));
   }
   function saveBudget(vals){ setBudget(b=>({...b,...vals, enteredBy:user, enteredAt:nowStr(lang), daysSince:0})); }
-  function reset(){ setPackages(seedPackages()); setAudit(seedAudit()); setAllocation({lastSync:"2026-06-01 06:00", recalcAt:null, status:"draft", rejectNote:"", at:null}); setLeaks(seedLeaks()); setBudget({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18}); setRoute(user==="minister"?"cockpit":"home"); }
+  function reset(){ setPackages(seedPackages()); setAudit(seedAudit()); setAllocation({lastSync:"2026-06-01 06:00", recalcAt:null, status:"draft", rejectNote:"", at:null}); setLeaks(seedLeaks()); setConfigChanges(seedConfigChanges()); setSettingsVals(initSettingsVals()); setBudget({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18}); setRoute(user==="minister"?"cockpit":"home"); }
 
-  const store={ t,lang,setLang,currency,setCurrency,user,setUser,route,setRoute,packages,audit,addPackage,actOnPackage,reset,allocation,recalcAlloc,submitAlloc,actAlloc,leaks,leakAct,budget,saveBudget,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,baseline,pushAudit };
+  function addConfigChange(data){
+    const ts=nowStr(lang);
+    const id="CC-"+(String(configChanges.length+1).padStart(3,"0"));
+    const cc={ id, status:"draft", history:[], createdAt:ts, submittedBy:"analyst", approvedBy:null, ...data };
+    setConfigChanges(prev=>[cc,...prev]);
+  }
+  function submitConfigChange(id){
+    setConfigChanges(prev=>prev.map(cc=>cc.id===id?{...cc,status:"pending",history:[...cc.history,{role:"analyst",action:"act_submit",ts:nowStr(lang),note:""}]}:cc));
+    pushAudit({role:"analyst",action:"act_submit",target:id,status:"submitted",cat:"config"});
+  }
+  function actOnConfigChange(id,kind,note){
+    const map={ approve:["scheduled","act_approve","owner"], reject:["rejected","act_reject",user], escalate:["pending","act_escalate","owner"] };
+    if(kind==="approve"){
+      const cc=configChanges.find(c=>c.id===id);
+      if(cc && !cc.effectiveFrom){
+        // Immediate effective if no scheduled date — also update settingsVals
+        setConfigChanges(prev=>prev.map(c=>c.id===id?{...c,status:"effective",approvedBy:user,history:[...c.history,{role:"owner",action:"act_approve",ts:nowStr(lang),note:note||""}]}:c));
+        if(cc.paramKey) setSettingsVals(prev=>({...prev,[cc.paramKey]:cc.newValue}));
+        pushAudit({role:"owner",action:"act_approve",target:id,status:"effective",note:note||"",cat:"config"});
+        return;
+      }
+    }
+    const [status,action,role]=map[kind];
+    setConfigChanges(prev=>prev.map(c=>c.id===id?{...c,status,approvedBy:kind==="approve"?user:c.approvedBy,history:[...c.history,{role,action,ts:nowStr(lang),note:note||""}]}:c));
+    // If approved with a scheduled date, don't update yet; if rejected, keep old value
+    if(kind==="approve"){
+      const cc=configChanges.find(c=>c.id===id);
+      if(cc && cc.paramKey) setSettingsVals(prev=>({...prev,[cc.paramKey]:cc.newValue}));
+    }
+    pushAudit({role,action,target:id,status,note:note||"",cat:"config"});
+  }
+  function setSettingVal(key,val){
+    setSettingsVals(prev=>({...prev,[key]:val}));
+  }
+
+  const store={ t,lang,setLang,currency,setCurrency,user,setUser,route,setRoute,packages,audit,addPackage,actOnPackage,reset,allocation,recalcAlloc,submitAlloc,actAlloc,leaks,leakAct,budget,saveBudget,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,baseline,pushAudit,configChanges,addConfigChange,submitConfigChange,actOnConfigChange,settingsVals,setSettingVal,whatifContext,setWhatifContext };
 
   if(!user) return (<Ctx.Provider value={store}><Login/></Ctx.Provider>);
 
@@ -3985,11 +4385,11 @@ function App(){
       : route==="inventory"?<InventoryAbsorption/> : route==="benchmark"?<Benchmarking/> : route==="audit"?<AuditTrailPage/>
       : route==="copilot"?<CopilotHandoff/> : route==="dash360"?<Beneficiary360Page/> : route==="orchestration"?<OrchestrationPage/> : route==="permissions"?<PermissionsPage/> : route==="settings"?<SettingsPage/> : <AnalystHome/>;
   } else if(user==="owner"){
-    page = route==="data"?<DataReadiness/> : route==="alloc"?<Allocation/> : route==="approvals"?<DecisionPackages filter={p=>p.status!=="draft"}/> : route==="referrals"?<BeneficiaryTracking/> : route==="fairness"?<FairnessLeakage/> : route==="forecast"?<ForecastFairness/>
+    page = route==="data"?<DataReadiness/> : route==="alloc"?<Allocation/> : route==="approvals"?<DecisionPackages filter={p=>p.status!=="draft"} showConfig="owner"/> : route==="referrals"?<BeneficiaryTracking/> : route==="fairness"?<FairnessLeakage/> : route==="forecast"?<ForecastFairness/>
       : route==="inventory"?<InventoryAbsorption/> : route==="impact"?<ImpactAttribution/> : route==="benchmark"?<Benchmarking/> : route==="audit"?<AuditTrailPage/>
       : route==="dash360"?<Beneficiary360Page/> : route==="orchestration"?<OrchestrationPage/> : route==="permissions"?<PermissionsPage/> : route==="settings"?<SettingsPage/> : <OwnerHome/>;
   } else {
-    page = route==="decisions"?<DecisionPackages filter={p=>["escalated","adjudicated","rejected"].includes(p.status)}/>
+    page = route==="decisions"?<DecisionPackages filter={p=>["escalated","adjudicated","rejected"].includes(p.status)} showConfig="minister"/>
       : route==="forecast"?<ForecastFairness/> : route==="fairness"?<FairnessLeakage/> : route==="impact"?<ImpactAttribution/> : route==="benchmark"?<Benchmarking/> : route==="audit"?<AuditTrailPage/>
       : route==="dash360"?<Beneficiary360Page/> : route==="orchestration"?<OrchestrationPage/> : route==="permissions"?<PermissionsPage/> : route==="settings"?<SettingsPage/> : <MinisterHome/>;
   }
