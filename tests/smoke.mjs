@@ -56,6 +56,9 @@ const harness = `
       leaks:seedAll.leaks, leakAct:()=>{},
       configChanges:typeof seedConfigChanges==='function'?seedConfigChanges():[], addConfigChange:()=>{}, submitConfigChange:()=>{}, actOnConfigChange:()=>{},
       whatifContext:null, setWhatifContext:()=>{},
+      formulaMatrix:{}, setFormulaMatrix:()=>{},
+      formulaVersions:[], setFormulaVersions:()=>{},
+      createFormulaVersion:()=>{}, activateFormulaVersion:()=>{}, rollbackToVersion:()=>{},
       budget:{cash:1580,inkind:220,ceiling:4200,enteredBy:"owner",enteredAt:"2026-05-28 10:00",daysSince:18}, saveBudget:()=>{} };
   }
   const PAGES=[["Login","analyst",Login],["AnalystHome","analyst",AnalystHome],["OwnerHome","owner",OwnerHome],["MinisterHome","minister",MinisterHome],

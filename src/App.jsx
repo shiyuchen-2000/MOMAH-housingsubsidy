@@ -271,7 +271,7 @@ const I18N = {
     approvals_sub:"Review tactical recommendations submitted by analysts.",
     cockpit_sub:"Strategic KPIs and items requiring ministerial adjudication.",
     decisions_sub:"Items escalated for strategic adjudication (caps / internal regulations).",
-    audit_sub:"Every submission, approval, rejection and adjudication is recorded.", auditDetail:"Audit trail detail", openHint:"Click a work order # to view details",
+    audit_sub:"Every submission, approval, rejection and adjudication is recorded.", audit_type:"Type", auditDetail:"Audit trail detail", openHint:"Click a work order # to view details",
     copilot_btn:"Deliver to Housing Copilot", copilot_sub:"Approved outputs are delivered to Housing Copilot via the API Contract.",
     deliver:"Deliver to Housing Copilot", opening:"Opening Housing Copilot…",
     redline:"The system only recommends. It never auto-approves, never auto-suspends support, never edits regulations.",
@@ -401,7 +401,7 @@ const I18N = {
     approvals_sub:"راجع التوصيات التكتيكية المرفوعة من المحللين.",
     cockpit_sub:"مؤشرات استراتيجية وبنود تتطلب بتّ الوزير.",
     decisions_sub:"بنود مرفوعة للبتّ الاستراتيجي (السقوف / اللوائح الداخلية).",
-    audit_sub:"يُسجّل كل رفع واعتماد ورفض وبتّ.", auditDetail:"تفاصيل سجل التدقيق", openHint:"اضغط رقم أمر العمل لعرض التفاصيل",
+    audit_sub:"يُسجّل كل رفع واعتماد ورفض وبتّ.", audit_type:"النوع", auditDetail:"تفاصيل سجل التدقيق", openHint:"اضغط رقم أمر العمل لعرض التفاصيل",
     copilot_btn:"التسليم لمساعد الإسكان", copilot_sub:"تُسلَّم المخرجات المعتمدة إلى مساعد الإسكان عبر عقد الـ API.",
     deliver:"التسليم إلى مساعد الإسكان", opening:"جارٍ فتح مساعد الإسكان…",
     redline:"النظام يوصي فقط: لا يعتمد آلياً، ولا يوقف الدعم آلياً، ولا يعدّل اللوائح.",
@@ -1503,7 +1503,7 @@ function OrchestrationChain({states}){
 
 /* ---- What-if — centerpiece ---- */
 function WhatIf(){
-  const {t,setRoute,addPackage,user,formulaParams,formulaVersion,setFormulaVersion,baseline,whatifContext,setWhatifContext}=useStore(); const {money}=useMoney();
+  const {t,setRoute,addPackage,user,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,baseline,whatifContext,setWhatifContext,lang,formulaMatrix,setFormulaMatrix}=useStore(); const {money}=useMoney();
   const [p,setP]=useState({reallocatePct:0,capHighPct:0,boostLowPct:0,offPlanPct:0});
   const [nl,setNl]=useState("");
   const [chain,setChain]=useState(["idle","idle","idle","idle"]);
@@ -1513,17 +1513,54 @@ function WhatIf(){
   const [evP,setEvP]=useState(null);
   const [leverFlash,setLeverFlash]=useState(false);
   const [cmpMode,setCmpMode]=useState("dual"); // UC-09: dual = base vs current; triple = +recommended
-  // Consume whatifContext from Allocation page
+  const [testingVersionId, setTestingVersionId] = useState(null);
+  const [testingVersionParams, setTestingVersionParams] = useState(null);
+  // Consume whatifContext from Allocation page or Formula version test
   useEffect(()=>{
     if(whatifContext){
-      setNl(`针对 "${whatifContext.bandLabel}" 档优化支持方案 · 当前补贴 ${money(whatifContext.subsidy)} · HBR ${(whatifContext.hbr*100).toFixed(0)}%`);
+      // Version test from FormulaPage
+      if(whatifContext.fromFormula && whatifContext.fromVersion){
+        const { ded, dur, ceil, rate, versionId } = whatifContext;
+        const text = lang==="zh"
+          ? `测试版本 ${versionId}：扣除率 ${ded}%，利率 ${rate}%，周期 ${dur}年 · ${t("nlTestTip")}`
+          : lang==="ar"
+          ? `اختبار الإصدار ${versionId}: خصم ${ded}%، معدل ${rate}%، مدة ${dur} سنة · ${t("nlTestTip")}`
+          : `Testing version ${versionId}: Deduction ${ded}%, Rate ${rate}%, Duration ${dur}y · ${t("nlTestTip")}`;
+        setNl(text);
+        setTestingVersionId(versionId);
+        setTestingVersionParams({ ded, dur, ceil, rate });
+        setWhatifContext(null);
+        return;
+      }
+      // Context from Allocation page
+      const nlText = lang==="zh"
+        ? `针对 "${whatifContext.bandLabel}" 档优化支持方案 · 当前补贴 ${money(whatifContext.subsidy)} · HBR ${(whatifContext.hbr*100).toFixed(0)}%`
+        : lang==="ar"
+        ? `تحسين دعم الفئة "${whatifContext.bandLabel}" · الدعم الحالي ${money(whatifContext.subsidy)} · HBR ${(whatifContext.hbr*100).toFixed(0)}%`
+        : `Optimize support for "${whatifContext.bandLabel}" · Current subsidy ${money(whatifContext.subsidy)} · HBR ${(whatifContext.hbr*100).toFixed(0)}%`;
+      setNl(nlText);
       setP(prev=>({...prev, boostLowPct: whatifContext.below?0.08:0, capHighPct: whatifContext.below?0:0.10 }));
       setWhatifContext(null);
     }
   },[whatifContext]);
   // Determine if formula params are modified from default (the key "Test in What-if" use case)
   const formulaModified = formulaParams.ded!==40 || formulaParams.dur!==20 || formulaParams.rate!==4;
-  const mortOverrides = formulaModified ? formulaParams : null;
+  const versionModified = testingVersionParams !== null;
+  const effectiveFormulaParams = versionModified ? testingVersionParams : formulaParams;
+  // Resolve dimension-specific overrides (region > housingType > incomeBand)
+  const {region:dimRegion,housingType:dimHt,incomeBand:dimIb,regions:dimRegions, housingTypes:dimHts, incomeBands:dimIbs}=formulaMatrix;
+  const dimEffParams = (()=>{
+    const fromRegion = dimRegion!=="all" && dimRegions[dimRegion] ? dimRegions[dimRegion] : null;
+    const fromHt = dimHt!=="all" && dimHts[dimHt] ? dimHts[dimHt] : null;
+    const fromIb = dimIb!=="all" && dimIbs[dimIb] ? dimIbs[dimIb] : null;
+    return { ...(fromRegion||{}), ...(fromHt||{}), ...(fromIb||{}) };
+  })();
+  const hasDimOverride = dimRegion!=="all" || dimHt!=="all" || dimIb!=="all";
+  const finalFormulaParams = hasDimOverride
+    ? { ded: dimEffParams.ded??effectiveFormulaParams.ded, dur: dimEffParams.dur??effectiveFormulaParams.dur,
+        ceil: dimEffParams.ceil??effectiveFormulaParams.ceil, rate: dimEffParams.rate??effectiveFormulaParams.rate }
+    : effectiveFormulaParams;
+  const mortOverrides = (formulaModified || versionModified || hasDimOverride) ? finalFormulaParams : null;
   const scn=useMemo(()=>computeAllocation(p, mortOverrides),[p, mortOverrides]);
   const sv=scenarioSavings(scn, baseline.spend);
   const C=RC;
@@ -1600,7 +1637,10 @@ function WhatIf(){
       params:{...p}, affectsCap, type, regions,
       rationale: (ev?.text&&!ev?.text.startsWith(t("ai_start")))?ev.text:"",
       reclassified, affected,
-      ...(formulaModified?{containsFormulaChange:true, formulaSnapshot:{...formulaParams}}:{}),
+      ...((formulaModified || versionModified)?{
+        containsFormulaChange:true,
+        formulaSnapshot:{ ...effectiveFormulaParams, ...(testingVersionId ? {versionId: testingVersionId} : {}) }
+      }:{}),
       kpis:{ savingsPhase:sv.phase, pctBudget:sv.pctOfBudget, fg:scn.FG, hbr:scn.HBR },
     });
     setRoute("packages");
@@ -1634,6 +1674,32 @@ function WhatIf(){
       <button className="btn btn-ai" style={{flexShrink:0,minWidth:170,justifyContent:"center",textAlign:"center",fontWeight:700}} onClick={runNL} disabled={busy}>✦ {t("askAI")}</button>
     </div>
     {busy&&<div className="ai-working" style={{marginBottom:10}}>✦ {t("aiWorking")}</div>}
+    {testingVersionId && <div className="banner" style={{marginBottom:12,background:"var(--info-50)",borderColor:"var(--info)",fontSize:12}}>
+      🧪 {t("nav_formula")} · {t("fv_test")}: <b>{testingVersionId}</b>
+      {" · "}{t("fp_ded")} {testingVersionParams?.ded}% · {t("fp_rate")} {testingVersionParams?.rate}% · {t("fp_dur")} {testingVersionParams?.dur}{t("fp_yrs")}
+      <button className="btn ghost sm" style={{marginInlineStart:12,fontSize:11}} onClick={()=>{setTestingVersionId(null); setTestingVersionParams(null);}}>✕ {t("back")}</button>
+    </div>}
+    {/* Dimension selectors (same as FormulaPage) */}
+    <div className="cols-3" style={{marginBottom:12,gap:8}}>
+      <div className="field"><label style={{fontSize:12}}>{t("fp_region")}</label>
+        <select className="input" value={dimRegion} onChange={e=>setFormulaMatrix(f=>({...f,region:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+          <option value="all">{t("fp_region_all")}</option>
+          {Object.keys(dimRegions).map(k=><option key={k} value={k}>{t("rg_"+k)}</option>)}</select></div>
+      <div className="field"><label style={{fontSize:12}}>{t("fp_housing_type")}</label>
+        <select className="input" value={dimHt} onChange={e=>setFormulaMatrix(f=>({...f,housingType:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+          <option value="all">{t("fp_ht_all")}</option>
+          <option value="offplan">{t("fp_ht_offplan")}</option>
+          <option value="ready">{t("fp_ht_ready")}</option>
+          <option value="selfbuild">{t("fp_ht_selfbuild")}</option></select></div>
+      <div className="field"><label style={{fontSize:12}}>{t("fp_income_band")}</label>
+        <select className="input" value={dimIb} onChange={e=>setFormulaMatrix(f=>({...f,incomeBand:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+          <option value="all">{t("fp_ib_all")}</option>
+          {BANDS.filter(b=>b.below).map(b=><option key={b.key} value={b.key}>{bandLabel(t,b.key)}</option>)}
+          {BANDS.filter(b=>!b.below).map(b=><option key={b.key} value={b.key}>{bandLabel(t,b.key)}</option>)}</select></div>
+    </div>
+    {hasDimOverride && <div className="muted" style={{fontSize:11.5,marginBottom:12}}>
+      {t("fp_ded")}: <b className="mono">{finalFormulaParams.ded}%</b> · {t("fp_dur")}: <b className="mono">{finalFormulaParams.dur}{t("fp_yrs")}</b> · {t("fp_ceil")}: <b className="mono">{n0(finalFormulaParams.ceil)}</b> · {t("fp_rate")}: <b className="mono">{finalFormulaParams.rate}%</b>
+    </div>}
     <div className="cols-2">
       <Section className="lever-card" title={t("levers")} right={<button className="btn secondary sm" onClick={runSim} disabled={busy}>{busy?t("running"):t("runLevers")}</button>}>
         {leverDefs.map(d=>(<div key={d.field} className={"field"+(leverFlash?" lever-flash":"")}>
@@ -2116,11 +2182,12 @@ function AuditTrailPage(){
       {filtered.length===0? <div className="muted">{t("noItems")}</div> :
       <div className="scrollx"><table className="tbl">
         <thead><tr>
-          <th>{t("workOrder")}</th><th>{t("level")}</th><th>{t("action")}</th>
+          <th>{t("workOrder")}</th><th>{t("audit_type")}</th><th>{t("level")}</th><th>{t("action")}</th>
           <th>{t("colStatus")}</th><th>{t("time")}</th><th>{t("note")}</th>
         </tr></thead>
         <tbody>{filtered.map((a,i)=>(<tr key={i}>
           <td className="mono"><button className="wo wo-btn" onClick={()=>setSel(a.target)} title={t("auditDetail")}>{a.cat==="pkg"?"#":"⚬"}{a.target}<svg className="wo-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td>
+          <td><span className="chip gray" style={{fontSize:10}}>{a.cat?t("audit_cat"+a.cat.charAt(0).toUpperCase()+a.cat.slice(1)):"—"}</span></td>
           <td><span className="tag">{t(a.role)}</span></td>
           <td>{t(a.action)}</td>
           <td>{statusChip(t, a.status)}</td>
@@ -2390,7 +2457,7 @@ I18N.zh = {
   approvals_sub:"审阅分析师上报的战术级推荐。",
   cockpit_sub:"战略 KPI 与需部长裁决的事项。",
   decisions_sub:"上报待战略裁决的事项（补贴上限 / 内部法规）。",
-  audit_sub:"每次提交、采纳、驳回、裁决都被记录。", auditDetail:"审计轨迹详情", openHint:"点击工单编号查看详情",
+  audit_sub:"每次提交、采纳、驳回、裁决都被记录。", audit_type:"类型", auditDetail:"审计轨迹详情", openHint:"点击工单编号查看详情",
   copilot_btn:"交付至 Housing Copilot", copilot_sub:"经批准的输出通过 API 契约交付 Housing Copilot。",
   deliver:"交付至 Housing Copilot", opening:"正在打开 Housing Copilot…",
   redline:"系统只做推荐：永不自动审批、永不自动停补、永不修改法规。",
@@ -3419,68 +3486,292 @@ function SettingsPage(){
 
 /* ===== UC-01 Subsidy Formula ===== */
 function FormulaPage(){
-  const {t,setRoute,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,pushAudit,user}=useStore();
+  const {t,setRoute,addPackage,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,pushAudit,user,lang,packages,
+    formulaMatrix,setFormulaMatrix,formulaVersions,setFormulaVersions,createFormulaVersion,activateFormulaVersion,rollbackToVersion,setWhatifContext}=useStore();
   const {ded,dur,ceil,rate}=formulaParams;
+  function setParam(k,v){ setFormulaParams(f=>({...f,[k]:v})); }
   const [act,setAct]=useState(null);
   const dirty = ded!==40||dur!==20||ceil!==500000||rate!==4;
-  function setParam(key,val){
-    setFormulaParams(f=>({...f,[key]:val}));
-    setFormulaVersion(prev=>({...prev,validated:false,canActivate:false,approvedPkgId:null}));
-    setAct(null);
-  }
+  // 3D dimension selectors
+  const {region,housingType,incomeBand,regions,housingTypes,incomeBands}=formulaMatrix;
+  // Resolve effective params by dimension priority: region > housingType > incomeBand > defaults
+  const effParams = (()=>{
+    const fromRegion = region!=="all" && regions[region] ? regions[region] : null;
+    const fromHt = housingType!=="all" && housingTypes[housingType] ? housingTypes[housingType] : null;
+    const fromIb = incomeBand!=="all" && incomeBands[incomeBand] ? incomeBands[incomeBand] : null;
+    // Merge: IB overrides HT overrides Region
+    return { ...(fromRegion||{}), ...(fromHt||{}), ...(fromIb||{}) };
+  })();
+  const effDed = effParams.ded ?? ded;
+  const effDur = effParams.dur ?? dur;
+  const effCeil = effParams.ceil ?? ceil;
+  const effRate = effParams.rate ?? rate;
+  // Preview bands
   const bands=[3000,6000,9000,14000,22000];
-  const preview=bands.map(inc=>{ const maxH=Math.round(inc*ded/100); const sup=Math.max(0,Math.round(maxH*0.16*(1-rate/100*0.5))); return {inc,maxH,sup}; });
-  const vIsActive = formulaVersion.active==="v1.1";
-  function chipCls(s){ return s==="active" ? "chip" : s==="validated" ? "chip info" : s==="superseded" ? "chip gray" : "chip amber"; }
-  const v1Cls = chipCls(vIsActive?"active":(formulaVersion.validated?"validated":"pending"));
-  const v0Cls = chipCls(vIsActive?"superseded":"active");
+  const preview=bands.map(inc=>{ const maxH=Math.round(inc*effDed/100); const sup=Math.max(0,Math.round(maxH*0.16*(1-effRate/100*0.5))); return {inc,maxH,sup}; });
+  // Version management
+  const activeVer = formulaVersions.find(v=>v.status==="active");
+  const activeId = activeVer?.id||"FML-v1.0";
+  const [selVerId,setSelVerId]=useState(null);
+  const [actVerId,setActVerId]=useState(null);
+  const [cmpVerIds,setCmpVerIds]=useState([]);
+  const [saveModal,setSaveModal]=useState(false);
+  const [saveLabel,setSaveLabel]=useState("");
+  const [saveDesc,setSaveDesc]=useState("");
+  const [rollbackModal,setRollbackModal]=useState(null); // { id, label, params }
+  // Check activation state from formulaVersion
+  const canActivateNow = formulaVersion.canActivate && actVerId && actVerId!==activeId && (
+    formulaVersion.approvedVersionId ? actVerId===formulaVersion.approvedVersionId : true
+  );
   function handleActivate(){
-    setFormulaVersion(prev=>({...prev,active:"v1.1"}));
-    pushAudit({role:user,action:"act_version",target:"FML-v1.1",status:"activated",note:"Activated v1.1 after What-if validation",cat:"formula"});
+    if(!actVerId || !formulaVersion.canActivate) return;
+    activateFormulaVersion(actVerId);
+    setActVerId(null);
+    setFormulaVersion(prev=>({...prev,canActivate:false,approvedPkgId:null,approvedVersionId:null}));
     setAct("on");
   }
-  function handleRollback(){
-    setFormulaParams({ded:40,dur:20,ceil:500000,rate:4});
-    setFormulaVersion(prev=>({...prev,active:"v1.0",validated:false}));
-    pushAudit({role:user,action:"act_version",target:"FML-v1.0",status:"rolled back",note:"Rolled back to v1.0",cat:"formula"});
-    setAct("rb");
+  function handleRollbackPackage(verId){
+    const targetId = verId || actVerId;
+    if(!targetId || targetId===activeId) return;
+    const ver = formulaVersions.find(v=>v.id===targetId);
+    if(!ver) return;
+    setRollbackModal({ id:ver.id, label:ver.label||ver.id, params:ver.params });
+  }
+  function handleRollbackConfirm(){
+    if(!rollbackModal) return;
+    const ver = formulaVersions.find(v=>v.id===rollbackModal.id);
+    if(!ver) return;
+    const ts=nowStr(lang);
+    const id="WO-2026-0"+(400+Math.max(0,...packages.map(p=>parseInt(p.id.replace("WO-2026-0",""))||0)+1));
+    const pkg={ id, title:t("fp_ver_rollback")+": "+ver.id, status:"submitted", sla:48,
+      params:{}, kpis:ver.snapshot||{savingsPhase:0,fg:0,hbr:0}, type:"rollback",
+      containsFormulaChange:true, formulaSnapshot:{...ver.params, versionId:ver.id, rollback:true},
+      rationale:t("fp_ver_rollback")+" "+ver.id+": "+(ver.description||ver.label||""),
+      history:[{role:"analyst",action:"act_submit",ts,note:""}] };
+    addPackage(pkg);
+    setFormulaVersion(prev=>({...prev, canActivate:false, approvedPkgId:id, pendingActivationFor:ver.id }));
+    setRollbackModal(null);
+    setAct("rbp");
+    setRoute("packages");
+  }
+  function handleSaveVersion(){
+    if(!saveLabel.trim()) return;
+    createFormulaVersion(saveLabel.trim(), saveDesc.trim());
+    setSaveModal(false);
+    setSaveLabel("");
+    setSaveDesc("");
+    setAct("sv");
+  }
+  function toggleCmp(id){
+    setCmpVerIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id].slice(-2));
+  }
+  const showCmp = cmpVerIds.length===2;
+  const v1=showCmp?formulaVersions.find(v=>v.id===cmpVerIds[0]):null;
+  const v2=showCmp?formulaVersions.find(v=>v.id===cmpVerIds[1]):null;
+  // compute snapshot for comparison
+  const cmpRows = showCmp ? [
+    {k:"ded", l:"Deduction rate", v1:v1?.params.ded, v2:v2?.params.ded, u:"%"},
+    {k:"dur", l:"Duration", v1:v1?.params.dur, v2:v2?.params.dur, u:"y"},
+    {k:"ceil",l:"Ceiling", v1:v1?.params.ceil, v2:v2?.params.ceil, u:" SAR"},
+    {k:"rate",l:"Rate", v1:v1?.params.rate, v2:v2?.params.rate, u:"%"},
+  ] : [];
+  function statusChip(s){
+    const map={draft:"gray",active:"",superseded:"gray",pending:"amber",validated:"info"};
+    return <span className={"chip "+(map[s]||"")} style={{fontSize:11}}>{t("fv_"+s)}</span>;
   }
   return (<div className="fade">
-    <PageHeader title={t("nav_formula")} sub={t("f_sub")} right={<AgentBadge name={t("agent_alloc")} lvl="L2"/>}/>
+    <PageHeader title={t("nav_formula")} right={<AgentBadge name={t("agent_alloc")} lvl="L2"/>}/>
     {dirty&&!formulaVersion.validated&&<div className="alert-strong" style={{marginBottom:14}}>⚠ {t("fv_br07")}</div>}
     {dirty&&formulaVersion.validated&&!formulaVersion.canActivate&&<div className="banner" style={{marginBottom:14,background:"var(--info-50)",borderColor:"var(--info)"}}>✓ {t("fv_validated")} · {t("fv_approveFirst")}</div>}
     {dirty&&formulaVersion.canActivate&&<div className="banner" style={{marginBottom:14,background:"var(--success-50)",borderColor:"var(--success)"}}>✓ {t("fv_approved")}</div>}
+    {act==="on"&&<div className="banner" style={{marginBottom:14}}>✓ {t("fp_activated")}</div>}
+    {act==="ap"&&<div className="banner" style={{marginBottom:14,background:"var(--info-50)",borderColor:"var(--info)"}}>→ {t("config_submit")} · {t("config_awaiting")}</div>}
+    {act==="rbp"&&<div className="banner" style={{marginBottom:14,background:"var(--info-50)",borderColor:"var(--info)"}}>↩ {t("fp_ver_rollback")} · {t("config_awaiting")}</div>}
+    {act==="sv"&&<div className="banner" style={{marginBottom:14}}>✓ {t("fp_version_saved")}</div>}
     <div className="cols-2">
-      <Section title={t("fp_params")}>
-        <div className="field"><label style={{display:"flex",justifyContent:"space-between"}}><span>{t("fp_ded")}</span><span className="mono">{ded}%</span></label>
-          <input className="range" type="range" min="10" max="60" value={ded} onChange={e=>setParam("ded",+e.target.value)}/></div>
-        <div className="field"><label>{t("fp_dur")}</label>
-          <select className="input" value={dur} onChange={e=>setParam("dur",+e.target.value)} style={{width:"auto"}}><option value={5}>5 {t("fp_yrs")}</option><option value={10}>10 {t("fp_yrs")}</option><option value={20}>20 {t("fp_yrs")}</option></select></div>
-        <div className="field"><label>{t("fp_ceil")} <span className="muted">(SAR)</span></label>
-          <input className="input mono" type="number" value={ceil} onChange={e=>setParam("ceil",+e.target.value)}/></div>
-        <div className="field"><label style={{display:"flex",justifyContent:"space-between"}}><span>{t("fp_rate")}</span><span className="mono">{rate}%</span></label>
-          <input className="range" type="range" min="0" max="15" step="0.5" value={rate} onChange={e=>setParam("rate",+e.target.value)}/></div>
-        <div className="set-row"><div><div style={{fontWeight:600,fontSize:13.5}}>{t("fp_income")}</div><div className="muted" style={{fontSize:11.5}}>{t("fp_lockedNote")}</div></div><span className="chip gray">🔒 ⃁ 2,726/mo</span></div>
-        <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
-          <button className="btn secondary sm" onClick={()=>setRoute&&setRoute("whatif")}>✦ {t("fv_test")}</button>
-          <button className="btn sm" onClick={handleActivate} disabled={!dirty||!formulaVersion.canActivate}>✓ {t("fp_activate")}</button>
-          {formulaVersion.active==="v1.1"&&<button className="btn ghost sm" onClick={handleRollback}>↩ {t("fp_rollback")}</button>}
-        </div>
-        {act==="on"&&<div className="banner" style={{marginTop:10}}>✓ {t("fp_activated")}</div>}
-        {act==="rb"&&<div className="banner" style={{marginTop:10}}>↩ {t("fp_rolledback")}</div>}
-      </Section>
-      <Section title={t("fp_preview")} sub={t("fp_previewNote")}>
-        <table className="tbl"><thead><tr><th className="right-num">{t("fp_inc")}</th><th className="right-num">{t("fp_maxH")}</th><th className="right-num">{t("fp_sup")}</th></tr></thead>
-          <tbody>{preview.map(p=>(<tr key={p.inc}><td className="right-num mono">⃁ {n0(p.inc)}</td><td className="right-num mono">⃁ {n0(p.maxH)}</td><td className="right-num mono" style={{fontWeight:700,color:"var(--primary)"}}>⃁ {n0(p.sup)}/mo</td></tr>))}</tbody></table>
-        <div className="muted" style={{fontSize:11.5,marginTop:8}}>{dirty?("✎ "+t("fp_candidate")):("● "+t("fp_baseline"))}</div>
-      </Section>
-    </div>
-    <Section title={t("fv_title")}>
-      <div className="rel-time">
-        <div className={"rel-item"+(dirty&&!vIsActive?" cur":"")}><span className="rel-dot"/><div className="rel-head"><b>FML-v1.1</b> <span className="muted" style={{fontSize:12}}>· {vIsActive?t("fv_active"):t("fv_candidate")}</span><span className={v1Cls} style={{marginInlineStart:8}}>{t(vIsActive?"fv_active":formulaVersion.validated?"fv_validated":"fv_pending")}</span></div><ul className="rel-list"><li>{t("fv_v11")}</li></ul></div>
-        <div className={"rel-item"+(!dirty||vIsActive?" cur":"")}><span className="rel-dot"/><div className="rel-head"><b>FML-v1.0</b> <span className="muted" style={{fontSize:12}}>· 2026-05-01</span><span className={v0Cls} style={{marginInlineStart:8}}>{t(vIsActive?"fv_superseded":"fv_active")}</span></div><ul className="rel-list"><li>{t("fv_v10")}</li></ul></div>
+      {/* Left: parameter panel with 3D selectors */}
+      <div>
+        <Section title={t("fp_params")}>
+          {/* Dimension selectors */}
+          <div className="cols-3" style={{marginBottom:12,gap:8}}>
+            <div className="field"><label style={{fontSize:12}}>{t("fp_region")}</label>
+              <select className="input" value={region} onChange={e=>setFormulaMatrix(f=>({...f,region:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+                <option value="all">{t("fp_region_all")}</option>
+                {Object.keys(regions).map(k=><option key={k} value={k}>{t("rg_"+k)}</option>)}</select></div>
+            <div className="field"><label style={{fontSize:12}}>{t("fp_housing_type")}</label>
+              <select className="input" value={housingType} onChange={e=>setFormulaMatrix(f=>({...f,housingType:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+                <option value="all">{t("fp_ht_all")}</option>
+                <option value="offplan">{t("fp_ht_offplan")}</option>
+                <option value="ready">{t("fp_ht_ready")}</option>
+                <option value="selfbuild">{t("fp_ht_selfbuild")}</option></select></div>
+            <div className="field"><label style={{fontSize:12}}>{t("fp_income_band")}</label>
+              <select className="input" value={incomeBand} onChange={e=>setFormulaMatrix(f=>({...f,incomeBand:e.target.value}))} style={{height:34,padding:"4px 8px",fontSize:12}}>
+                <option value="all">{t("fp_ib_all")}</option>
+                {BANDS.filter(b=>b.below).map(b=><option key={b.key} value={b.key}>{bandLabel(t,b.key)}</option>)}
+                {BANDS.filter(b=>!b.below).map(b=><option key={b.key} value={b.key}>{bandLabel(t,b.key)}</option>)}</select></div>
+          </div>
+          <div className="muted" style={{fontSize:11.5,marginBottom:8}}>
+            {effDed!==ded?<span className="chip amber" style={{fontSize:10,marginInlineEnd:4}}>Override</span>:null}
+            {t("fp_ded")}: <b className="mono">{effDed}%</b> · {t("fp_dur")}: <b className="mono">{effDur}{t("fp_yrs")}</b> · {t("fp_ceil")}: <b className="mono">{n0(effCeil)}</b> · {t("fp_rate")}: <b className="mono">{effRate}%</b>
+          </div>
+          <div className="field"><label style={{display:"flex",justifyContent:"space-between"}}><span>{t("fp_ded")}</span><span className="mono">{ded}%</span></label>
+            <input className="range" type="range" min="10" max="60" value={ded} onChange={e=>setParam("ded",+e.target.value)}/></div>
+          <div className="field"><label>{t("fp_dur")}</label>
+            <select className="input" value={dur} onChange={e=>setParam("dur",+e.target.value)} style={{width:"auto"}}><option value={5}>5 {t("fp_yrs")}</option><option value={10}>10 {t("fp_yrs")}</option><option value={20}>20 {t("fp_yrs")}</option></select></div>
+          <div className="field"><label>{t("fp_ceil")} <span className="muted">(SAR)</span></label>
+            <input className="input mono" type="number" value={ceil} onChange={e=>setParam("ceil",+e.target.value)}/></div>
+          <div className="field"><label style={{display:"flex",justifyContent:"space-between"}}><span>{t("fp_rate")}</span><span className="mono">{rate}%</span></label>
+            <input className="range" type="range" min="0" max="15" step="0.5" value={rate} onChange={e=>setParam("rate",+e.target.value)}/></div>
+          <div className="set-row"><div><div style={{fontWeight:600,fontSize:13.5}}>{t("fp_income")}</div><div className="muted" style={{fontSize:11.5}}>{t("fp_lockedNote")}</div></div><span className="chip gray">🔒 ⃁ 2,726/mo</span></div>
+          <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+            <button className="btn ghost sm" onClick={()=>setSaveModal(true)}>📦 {t("fp_save_version")}</button>
+          </div>
+        </Section>
       </div>
+      {/* Right: cross-dimension preview */}
+      <div>
+        <Section title={t("fp_cross_preview")} sub={t("fp_previewNote")}>
+          <div className="scrollx"><table className="tbl" style={{fontSize:12}}><thead><tr>
+            <th>{t("fp_inc")}</th><th className="right-num">{t("fp_maxH")}</th><th className="right-num">{t("fp_sup")}</th>
+            <th style={{fontSize:10.5}}>{t("fp_housing_type")}</th><th style={{fontSize:10.5}}>{t("fp_region")}</th>
+          </tr></thead>
+            <tbody>{preview.map((p,i)=>{
+              const htKey = ["offplan","ready","selfbuild"][i%3];
+              const regKey = Object.keys(regions)[i%Object.keys(regions).length];
+              const ht = housingTypes[htKey]||{};
+              const rg = regions[regKey]||{};
+              const finalDed = ht.ded||rg.ded||effDed;
+              const finalRate = ht.rate||rg.rate||effRate;
+              const maxH = Math.round(p.inc*finalDed/100);
+              const sup = Math.max(0,Math.round(maxH*0.16*(1-finalRate/100*0.5)));
+              return (<tr key={i}>
+                <td className="right-num mono">⃁ {n0(p.inc)}</td>
+                <td className="right-num mono">⃁ {n0(maxH)}</td>
+                <td className="right-num mono" style={{fontWeight:700,color:"var(--primary)"}}>⃁ {n0(sup)}/mo</td>
+                <td style={{fontSize:10.5}}><span className="chip" style={{fontSize:9}}>{t("fp_ht_"+htKey)}</span></td>
+                <td style={{fontSize:10.5}}><span className="chip gray" style={{fontSize:9}}>{t("rg_"+regKey)}</span></td>
+              </tr>);
+            })}</tbody></table></div>
+          <div className="muted" style={{fontSize:11.5,marginTop:8}}>{dirty?("✎ "+t("fp_candidate")):("● "+t("fp_baseline"))}</div>
+        </Section>
+      </div>
+    </div>
+    {/* Version management */}
+    <Section title={<span className="sect-right">{t("fv_title")}<InfoTip text={t("fml_fg")}/></span>}
+      sub={<span className="muted" style={{fontSize:12}}>{t("fv_active")}: <b>{activeId}</b> · {t("set_lastMod")}: {activeVer?.activatedAt||"—"}</span>}
+      right={<div style={{display:"flex",gap:6}}>
+        <button className="btn sm" onClick={handleActivate} disabled={!canActivateNow}>✓ {t("fp_activate")}</button>
+      </div>}>
+      <table className="tbl"><thead><tr>
+        <th style={{width:30}}><input type="checkbox" checked={cmpVerIds.length>=2} onChange={()=>{}}/></th>
+        <th>{t("config_change_id")}</th><th>{t("fp_version_name")}</th><th>{t("fp_version_desc")}</th><th>{t("fp_ver_created")}</th><th>{t("fp_ver_activated")}</th>
+        <th>{t("fp_ver_status")}</th><th></th>
+      </tr></thead>
+        <tbody>{formulaVersions.map(v=>{
+          const isActive = v.status==="active";
+          const isSelected = v.id===actVerId;
+          const isApproved = formulaVersion.canActivate && formulaVersion.approvedVersionId===v.id && !isActive;
+          const rowBg = isActive ? "var(--green-50)" : isSelected ? "#F0F4F8" : isApproved ? "#E3F2FD" : undefined;
+          return (<tr key={v.id} style={{background:rowBg,cursor:"pointer",outline:isSelected?"2px solid var(--primary)":"none",outlineOffset:-2}}
+            onClick={()=>setActVerId(v.id===actVerId?null:v.id)}>
+            <td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={cmpVerIds.includes(v.id)} onChange={()=>{ toggleCmp(v.id); setActVerId(v.id); }}/></td>
+            <td className="mono"><span className="wo">{v.id}</span></td>
+            <td style={{fontSize:12,fontWeight:600}}>{v.label||v.id}</td>
+            <td style={{fontSize:12}}>{v.description}</td>
+            <td className="muted" style={{fontSize:12,whiteSpace:"nowrap"}}>{v.createdAt||"—"}</td>
+            <td className="muted" style={{fontSize:12,whiteSpace:"nowrap"}}>{v.activatedAt||"—"}</td>
+            <td>{statusChip(v.status)}</td>
+            <td>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                <button className="btn ghost sm" style={{fontSize:11}} onClick={e=>{e.stopPropagation(); setSelVerId(v.id);}}>👁 {t("fp_ver_detail")}</button>
+                <button className="btn secondary sm" style={{fontSize:11}} onClick={e=>{
+                  e.stopPropagation();
+                  setWhatifContext({
+                    fromFormula:true, fromVersion:true, versionId:v.id,
+                    ded:v.params.ded, dur:v.params.dur, ceil:v.params.ceil, rate:v.params.rate
+                  });
+                  setRoute("whatif");
+                }}>🧪 {t("fv_test")}</button>
+              </div>
+            </td>
+          </tr>);
+        })}</tbody></table>
     </Section>
+    {/* Version comparison panel */}
+    {showCmp && <Section title={t("fp_compare")}>
+      <table className="tbl"><thead><tr>
+        <th>{t("fp_compare_params")}</th>
+        <th className="right-num">{v1.id}</th>
+        <th className="right-num">{v2.id}</th>
+        <th className="right-num">{t("fp_compare_diff")}</th>
+      </tr></thead>
+        <tbody>{cmpRows.map(r=>{
+          const diff = r.v1!==r.v2;
+          const diffText = r.v1!=null&&r.v2!=null ? (r.v2-r.v1>0?"▲ +":"▼ ")+Math.abs(r.v2-r.v1)+r.u : "—";
+          return (<tr key={r.k}>
+            <td>{r.l}</td>
+            <td className="right-num mono">{r.v1}{r.u}</td>
+            <td className="right-num mono" style={{fontWeight:700}}>{r.v2}{r.u}</td>
+            <td className="right-num mono" style={{color:diff?"var(--primary)":"var(--muted)",fontWeight:diff?700:400}}>{diff?diffText:"—"}</td>
+          </tr>);
+        })}</tbody></table>
+    </Section>}
+    {/* Save version modal */}
+    {saveModal && <Modal title={t("fp_save_version")} onClose={()=>setSaveModal(false)}>
+      <div className="field"><label>{t("fp_version_name")}</label>
+        <input className="input" value={saveLabel} onChange={e=>setSaveLabel(e.target.value)} placeholder="e.g. Adjustment v2.0"/></div>
+      <div className="field"><label>{t("fp_version_desc")}</label>
+        <textarea className="input" style={{minHeight:60}} value={saveDesc} onChange={e=>setSaveDesc(e.target.value)} placeholder="Describe the changes…"/></div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+        <button className="btn secondary" onClick={()=>setSaveModal(false)}>{t("back")}</button>
+        <button className="btn" onClick={handleSaveVersion} disabled={!saveLabel.trim()}>📦 {t("fp_save_version")}</button>
+      </div>
+    </Modal>}
+    {/* Version detail modal */}
+    {selVerId && (()=>{
+      const v = formulaVersions.find(x=>x.id===selVerId);
+      if(!v) return null;
+      return (<Modal title={t("fp_ver_detail")+" · "+v.id} onClose={()=>setSelVerId(null)}>
+        <div className="pkg-detail" style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span className="wo">{v.id}</span>
+            {statusChip(v.status)}
+          </div>
+          <div style={{fontSize:13,marginTop:4}}>{v.description}</div>
+        </div>
+        {v.snapshot && <div className="pkg-detail" style={{marginBottom:14}}>
+          <div className="muted" style={{fontSize:12,marginBottom:6}}>{t("fp_ver_snapshot")}</div>
+          <div className="cols-3">
+            <div className="mini-kpi"><div className="muted">{t("kpi_fairness")}</div><div className="v">{v.snapshot.fg.toFixed(2)}</div></div>
+            <div className="mini-kpi"><div className="muted">{t("kpi_hbr")}</div><div className="v">{(v.snapshot.hbr*100).toFixed(1)}%</div></div>
+            <div className="mini-kpi"><div className="muted">{t("kpi_savings")}</div><div className="v">{(v.snapshot.spend).toFixed(2)}B</div></div>
+          </div>
+        </div>}
+        <div className="pkg-detail" style={{marginBottom:14}}>
+          <div className="muted" style={{fontSize:12,marginBottom:6}}>{t("fp_ver_params")}</div>
+          <div style={{fontSize:13}}>
+            {t("fp_ded")}: <b className="mono">{v.params.ded}%</b> · {t("fp_dur")}: <b className="mono">{v.params.dur}y</b> · {t("fp_ceil")}: <b className="mono">{n0(v.params.ceil)}</b> · {t("fp_rate")}: <b className="mono">{v.params.rate}%</b>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn ghost sm" onClick={()=>{createFormulaVersion("Fork: "+v.id, "Forked from "+v.id, v.params, v.matrix); setSelVerId(null);}}>📦 {t("fp_ver_create_from")}</button>
+          {v.status!=="active"&&<button className="btn sm" onClick={()=>{handleRollbackPackage(v.id); setSelVerId(null);}}>↩ {t("fp_ver_rollback")}</button>}
+        </div>
+      </Modal>);
+    })()}
+    {/* Rollback confirmation modal */}
+    {rollbackModal && <Modal title={t("fp_ver_rollback")} onClose={()=>setRollbackModal(null)}>
+      <div style={{padding:"4px 0 12px",fontSize:13.5,lineHeight:1.6}}>
+        {t("fp_rollback_confirm", {ver: rollbackModal.label})}
+        <div className="muted" style={{fontSize:12,marginTop:8}}>
+          {t("fp_ded")}: <b className="mono">{rollbackModal.params.ded}%</b> · {t("fp_dur")}: <b className="mono">{rollbackModal.params.dur}y</b> · {t("fp_rate")}: <b className="mono">{rollbackModal.params.rate}%</b>
+        </div>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+        <button className="btn secondary" onClick={()=>setRollbackModal(null)}>{t("cancel")}</button>
+        <button className="btn" onClick={handleRollbackConfirm}>✓ {t("confirm")}</button>
+      </div>
+    </Modal>}
   </div>);
 }
 
@@ -3527,7 +3818,20 @@ Object.assign(I18N.en,{ nav_settings:"Settings", nav_formula:"Subsidy Formula",
   set_g_dq:"Data quality", set_g_budget:"Budget thresholds", set_g_budgetC:"Budget constants", set_g_esc:"Escalation & time limits", set_g_fair:"Fairness gap", set_g_hbr:"Housing burden (HBR)", set_g_mon:"Monitoring thresholds",
   set_minComplete:"Minimum data completeness", set_earlyAlert:"Early budget alert", set_critAlert:"Critical budget alert", set_annual:"Annual budget (SAR M)", set_eligible:"Total eligible population", set_minThresh:"Ministerial escalation (redistribution)", set_boTime:"Business Owner response time", set_minTime:"Minister escalation deadline", set_fgMin:"Fairness Gap minimum acceptable", set_hbrCeil:"HBR ceiling", set_demandChg:"Significant change in demand", set_improveDur:"Improvement duration for HBR",
   f_sub:"The formulas behind the engine — with worked examples",
-  fv_title:"Formula versions", fv_test:"Test in What-if", fv_br07:"A modified formula must be validated in What-if before it can be activated.", fv_candidate:"Candidate", fv_pending:"Pending validation", fv_validated:"Validated ✓", fv_testDone:"Ready to activate", fv_approveFirst:"Package approval required before activation", fv_approved:"Approved ✓ Ready to activate", fv_active:"Active", fv_superseded:"Superseded", fv_v11:"Deduction rate 40% → 43% — needs What-if validation.", fv_v10:"Baseline formula in production.",
+  // formula page new keys
+  fp_params:"Parameters", fp_region:"Region", fp_region_all:"All regions",
+  fp_housing_type:"Housing type", fp_ht_all:"All types", fp_ht_offplan:"Off-plan", fp_ht_ready:"Ready", fp_ht_selfbuild:"Self-build",
+  fp_income_band:"Income band", fp_ib_all:"All bands",
+  fp_cross_preview:"Cross-dimension preview",
+  fp_save_version:"Save as version", fp_version_name:"Version name", fp_version_desc:"Description", fp_version_saved:"Version saved",
+  fp_compare:"Version comparison", fp_compare_params:"Parameter", fp_compare_diff:"Diff",
+  fp_ver_detail:"Details", fp_ver_created:"Created", fp_ver_activated:"Activated", fp_ver_status:"Status",
+  fp_ver_snapshot:"Activation snapshot", fp_ver_params:"Parameters",
+  fp_ver_rollback:"Rollback", fp_ver_create_from:"Fork from this",
+  fp_activate:"Activate", fp_rollback:"Rollback", fp_activated:"Activated", fp_rolledback:"Rolled back",
+  fp_rollback_confirm:"This operation will submit a rollback request to the Business Owner for approval. Confirm?",
+  cancel:"Cancel", confirm:"Confirm",
+  fv_title:"Formula versions", fv_test:"Test in What-if", fv_br07:"A modified formula must be validated in What-if before it can be activated.", fv_draft:"Draft", fv_candidate:"Candidate", fv_pending:"Pending validation", fv_validated:"Validated ✓", fv_testDone:"Ready to activate", fv_approveFirst:"Package approval required before activation", fv_approved:"Approved ✓ Ready to activate", fv_active:"Active", fv_superseded:"Superseded", fv_v11:"Deduction rate 40% → 43% — needs What-if validation.", fv_v10:"Baseline formula in production.",
   agent_status:"Agent fleet status", agent_status_sub:"All 8 agents operational · L1/L2: business, L3: AI orchestration",
   permissionMatrix:"Permission Matrix",
   perm_mat_desc:"View full role-permission mapping (RACI)",
@@ -3541,7 +3845,7 @@ Object.assign(I18N.en,{ nav_settings:"Settings", nav_formula:"Subsidy Formula",
   perm_owner_desc:"Approve on Allocation & Decisions, escalation authority",
   perm_minister_desc:"Read-only access to 6 modules, final adjudication",
   al_gateAll:"Checked existing data (completeness, vs last month, What-if verified)",
-  fp_params:"Formula parameters", fp_ded:"Optimal deduction rate", fp_dur:"Support duration", fp_yrs:"yrs", fp_ceil:"Financing ceiling", fp_rate:"Reference interest rate", fp_income:"Income threshold (statutory)", fp_lockedNote:"Fixed — Ministry of Human Resources poverty line", fp_activate:"Activate v1.1", fp_rollback:"Rollback to v1.0", fp_activated:"Candidate activated (after What-if validation)", fp_rolledback:"Rolled back to v1.0", fp_preview:"Preview by income band", fp_previewNote:"Recomputed live as parameters change", fp_inc:"Income", fp_maxH:"Max housing cost", fp_sup:"Est. monthly support", fp_candidate:"Candidate (unsaved) — validate before activating", fp_baseline:"Matches active v1.0",
+  fp_ded:"Optimal deduction rate", fp_dur:"Support duration", fp_yrs:"yrs", fp_ceil:"Financing ceiling", fp_rate:"Reference interest rate", fp_income:"Income threshold (statutory)", fp_lockedNote:"Fixed — Ministry of Human Resources poverty line", fp_preview:"Preview by income band", fp_previewNote:"Recomputed live as parameters change", fp_inc:"Income", fp_maxH:"Max housing cost", fp_sup:"Est. monthly support", fp_candidate:"Candidate (unsaved) — validate before activating", fp_baseline:"Matches active v1.0",
   fc_monthly:"Monthly", fc_cumulative:"Cumulative", fc_actual:"Actual", fc_forecast:"Forecast (OLS)", fc_ci:"Confidence ±12%",
   ins_title:"AI insights", ins_sub:"Natural-language reading of the current state",
   ins_tenure_h:"Structural tenure shift", ins_tenure_t:"Rent inflation 8–10% far outpaces wage growth 4–5%, while purchase prices stay in low single digits.", ins_tenure_r:"Shift budget toward purchase subsidies to move citizens out of the volatile rental market.",
@@ -3578,7 +3882,20 @@ Object.assign(I18N.zh,{ nav_settings:"设置", nav_formula:"补贴公式",
   set_g_dq:"数据质量", set_g_budget:"预算阈值", set_g_budgetC:"预算常量", set_g_esc:"升级与时限", set_g_fair:"公平性差距", set_g_hbr:"住房负担 (HBR)", set_g_mon:"监测阈值",
   set_minComplete:"最低数据完整度", set_earlyAlert:"预算预警(早期)", set_critAlert:"预算预警(严重)", set_annual:"年度预算 (SAR M)", set_eligible:"合格总人口", set_minThresh:"部长升级阈值(再分配)", set_boTime:"业务负责人响应时限", set_minTime:"部长升级截止", set_fgMin:"公平差距最低可接受", set_hbrCeil:"HBR 上限", set_demandChg:"需求显著变化", set_improveDur:"HBR 改善持续",
   f_sub:"引擎背后的公式 —— 附算例",
-  fv_title:"公式版本", fv_test:"在 What-if 中测试", fv_br07:"修改后的公式必须先在 What-if 验证，才能激活。", fv_candidate:"候选", fv_pending:"待验证", fv_validated:"已验证 ✓", fv_testDone:"准备好激活", fv_approveFirst:"须经决策包审批通过方可激活", fv_approved:"已审批 ✓ 可激活", fv_active:"生效中", fv_superseded:"已迭代", fv_v11:"扣除率 40% → 43% —— 需 What-if 验证。", fv_v10:"生产环境基线公式。",
+  // formula page new keys
+  fp_params:"参数面板", fp_region:"地区", fp_region_all:"全部地区",
+  fp_housing_type:"住房类型", fp_ht_all:"全部类型", fp_ht_offplan:"期房", fp_ht_ready:"现房", fp_ht_selfbuild:"自建",
+  fp_income_band:"收入档", fp_ib_all:"全部档位",
+  fp_cross_preview:"交叉维度预览",
+  fp_save_version:"另存为版本", fp_version_name:"版本名称", fp_version_desc:"描述", fp_version_saved:"版本已保存",
+  fp_compare:"版本对比", fp_compare_params:"参数", fp_compare_diff:"差异",
+  fp_ver_detail:"详情", fp_ver_created:"创建时间", fp_ver_activated:"激活时间", fp_ver_status:"状态",
+  fp_ver_snapshot:"激活快照", fp_ver_params:"参数",
+  fp_ver_rollback:"回滚", fp_ver_create_from:"从此创建",
+  fp_activate:"激活", fp_rollback:"回滚", fp_activated:"已激活", fp_rolledback:"已回滚",
+  fp_rollback_confirm:"此操作将向业务负责人提交回滚审批请求，是否确认？",
+  cancel:"取消", confirm:"确认",
+  fv_title:"公式版本", fv_test:"在 What-if 中测试", fv_br07:"修改后的公式必须先在 What-if 验证，才能激活。", fv_draft:"草稿", fv_candidate:"候选", fv_pending:"待验证", fv_validated:"已验证 ✓", fv_testDone:"准备好激活", fv_approveFirst:"须经决策包审批通过方可激活", fv_approved:"已审批 ✓ 可激活", fv_active:"生效中", fv_superseded:"已迭代", fv_v11:"扣除率 40% → 43% —— 需 What-if 验证。", fv_v10:"生产环境基线公式。",
   agent_status:"智能体集群状态", agent_status_sub:"8 个智能体全部运行中 · L1/L2: 业务层, L3: AI 编排",
   permissionMatrix:"权限矩阵", perm_mat_desc:"查看完整角色-权限映射",
   perm_view:"查看", perm_edit:"编辑", perm_approve:"审批", uc:"模块", note:"备注",
@@ -3587,7 +3904,7 @@ Object.assign(I18N.zh,{ nav_settings:"设置", nav_formula:"补贴公式",
   perm_owner_desc:"对配分与决策拥有审批权与逐级上报权",
   perm_minister_desc:"对 6 个模块拥有只读权限,最终裁定权",
   al_gateAll:"已检查现有数据（完整性、环比变化、What-if 已验证）",
-  fp_params:"公式参数", fp_ded:"最优扣除率", fp_dur:"支援期限", fp_yrs:"年", fp_ceil:"融资上限", fp_rate:"参考利率", fp_income:"收入门槛(法定)", fp_lockedNote:"固定 —— 人力资源部贫困线", fp_activate:"激活 v1.1", fp_rollback:"回滚到 v1.0", fp_activated:"候选已激活(经 What-if 验证后)", fp_rolledback:"已回滚到 v1.0", fp_preview:"按收入档预览", fp_previewNote:"参数变化时实时重算", fp_inc:"收入", fp_maxH:"最高住房成本", fp_sup:"预估月补", fp_candidate:"候选(未保存)—— 激活前需验证", fp_baseline:"与生效 v1.0 一致",
+  fp_ded:"最优扣除率", fp_dur:"支援期限", fp_yrs:"年", fp_ceil:"融资上限", fp_rate:"参考利率", fp_income:"收入门槛(法定)", fp_lockedNote:"固定 —— 人力资源部贫困线", fp_preview:"按收入档预览", fp_previewNote:"参数变化时实时重算", fp_inc:"收入", fp_maxH:"最高住房成本", fp_sup:"预估月补", fp_candidate:"候选(未保存)—— 激活前需验证", fp_baseline:"与生效 v1.0 一致",
   fc_monthly:"月度", fc_cumulative:"累计", fc_actual:"实际", fc_forecast:"预测(OLS)", fc_ci:"置信区间 ±12%",
   ins_title:"AI 洞察", ins_sub:"对当前态势的自然语言解读",
   ins_tenure_h:"结构性租购转变", ins_tenure_t:"租金通胀 8–10% 远超工资增长 4–5%,而购房价格仍处低个位数。", ins_tenure_r:"建议将预算转向购房补贴,把公民从动荡的租赁市场转移出来。",
@@ -3624,7 +3941,20 @@ Object.assign(I18N.ar,{ nav_settings:"الإعدادات", nav_formula:"صيغة
   set_g_dq:"جودة البيانات", set_g_budget:"عتبات الميزانية", set_g_budgetC:"ثوابت الميزانية", set_g_esc:"التصعيد والمهل", set_g_fair:"فجوة العدالة", set_g_hbr:"عبء السكن (HBR)", set_g_mon:"عتبات المراقبة",
   set_minComplete:"الحد الأدنى لاكتمال البيانات", set_earlyAlert:"تنبيه ميزانية مبكر", set_critAlert:"تنبيه ميزانية حرج", set_annual:"الميزانية السنوية (SAR M)", set_eligible:"إجمالي السكان المؤهلين", set_minThresh:"عتبة تصعيد الوزير (إعادة التوزيع)", set_boTime:"مهلة رد مالك الأعمال", set_minTime:"مهلة تصعيد الوزير", set_fgMin:"الحد الأدنى المقبول لفجوة العدالة", set_hbrCeil:"سقف HBR", set_demandChg:"تغيّر كبير في الطلب", set_improveDur:"مدة تحسّن HBR",
   f_sub:"الصيغ خلف المحرك — مع أمثلة محلولة",
-  fv_title:"إصدارات الصيغة", fv_test:"اختبار في What-if", fv_br07:"يجب التحقق من الصيغة المعدّلة في What-if قبل تفعيلها.", fv_candidate:"مرشّح", fv_pending:"بانتظار التحقق", fv_validated:"تم التحقق ✓", fv_testDone:"جاهز للتفعيل", fv_approveFirst:"يلزم موافقة الحزمة قبل التفعيل", fv_approved:"تمت الموافقة ✓ جاهز للتفعيل", fv_active:"فعّال", fv_superseded:"مستبدل", fv_v11:"معدل الخصم ٤٠٪ → ٤٣٪ — يحتاج تحقق What-if.", fv_v10:"الصيغة الأساسية في الإنتاج.",
+  // formula page new keys
+  fp_params:"المعاملات", fp_region:"المنطقة", fp_region_all:"جميع المناطق",
+  fp_housing_type:"نوع السكن", fp_ht_all:"جميع الأنواع", fp_ht_offplan:"على الخارطة", fp_ht_ready:"جاهز", fp_ht_selfbuild:"بناء ذاتي",
+  fp_income_band:"شريحة الدخل", fp_ib_all:"جميع الشرائح",
+  fp_cross_preview:"معاينة متعددة الأبعاد",
+  fp_save_version:"حفظ كإصدار", fp_version_name:"اسم الإصدار", fp_version_desc:"الوصف", fp_version_saved:"تم حفظ الإصدار",
+  fp_compare:"مقارنة الإصدارات", fp_compare_params:"المعامل", fp_compare_diff:"الفرق",
+  fp_ver_detail:"التفاصيل", fp_ver_created:"تاريخ الإنشاء", fp_ver_activated:"تاريخ التفعيل", fp_ver_status:"الحالة",
+  fp_ver_snapshot:"لقطة التفعيل", fp_ver_params:"المعاملات",
+  fp_ver_rollback:"استرجاع", fp_ver_create_from:"إنشاء نسخة من",
+  fp_activate:"تفعيل", fp_rollback:"استرجاع", fp_activated:"مُفعَّل", fp_rolledback:"تم الاسترجاع",
+  fp_rollback_confirm:"سيؤدي هذا الإجراء إلى إرسال طلب الاسترجاع إلى مسؤول الأعمال للموافقة. هل أنت متأكد؟",
+  cancel:"إلغاء", confirm:"تأكيد",
+  fv_title:"إصدارات الصيغة", fv_test:"اختبار في What-if", fv_br07:"يجب التحقق من الصيغة المعدّلة في What-if قبل تفعيلها.", fv_draft:"مسودة", fv_candidate:"مرشّح", fv_pending:"بانتظار التحقق", fv_validated:"تم التحقق ✓", fv_testDone:"جاهز للتفعيل", fv_approveFirst:"يلزم موافقة الحزمة قبل التفعيل", fv_approved:"تمت الموافقة ✓ جاهز للتفعيل", fv_active:"فعّال", fv_superseded:"مستبدل", fv_v11:"معدل الخصم ٤٠٪ → ٤٣٪ — يحتاج تحقق What-if.", fv_v10:"الصيغة الأساسية في الإنتاج.",
   agent_status:"حالة أسطول الوكلاء", agent_status_sub:"جميع الوكلاء الثمانية يعملون · L1/L2: طبقة الأعمال, L3: تنسيق الذكاء الاصطناعي",
   permissionMatrix:"مصفوفة الصلاحيات", perm_mat_desc:"عرض تخطيط الصلاحيات الكامل",
   perm_view:"عرض", perm_edit:"تعديل", perm_approve:"اعتماد", uc:"الوحدة", note:"ملاحظة",
@@ -3633,7 +3963,7 @@ Object.assign(I18N.ar,{ nav_settings:"الإعدادات", nav_formula:"صيغة
   perm_owner_desc:"اعتماد التخصيص والقرارات، صلاحية التصعيد",
   perm_minister_desc:"وصول للقراءة فقط لـ ٦ وحدات، الفصل النهائي",
   al_gateAll:"تم فحص البيانات الحالية (الاكتمال، المقارنة بالشهر الماضي، التحقق في What-if)",
-  fp_params:"معاملات الصيغة", fp_ded:"معدل الخصم الأمثل", fp_dur:"مدة الدعم", fp_yrs:"سنة", fp_ceil:"سقف التمويل", fp_rate:"سعر الفائدة المرجعي", fp_income:"حدّ الدخل (نظامي)", fp_lockedNote:"ثابت — خط الفقر لوزارة الموارد البشرية", fp_activate:"تفعيل v1.1", fp_rollback:"التراجع إلى v1.0", fp_activated:"تم تفعيل المرشّح (بعد تحقق What-if)", fp_rolledback:"تم التراجع إلى v1.0", fp_preview:"معاينة حسب شريحة الدخل", fp_previewNote:"يُعاد حسابه فور تغيير المعاملات", fp_inc:"الدخل", fp_maxH:"أقصى تكلفة سكن", fp_sup:"الدعم الشهري التقديري", fp_candidate:"مرشّح (غير محفوظ) — تحقّق قبل التفعيل", fp_baseline:"مطابق للنسخة الفعّالة v1.0",
+  fp_ded:"معدل الخصم الأمثل", fp_dur:"مدة الدعم", fp_yrs:"سنة", fp_ceil:"سقف التمويل", fp_rate:"سعر الفائدة المرجعي", fp_income:"حدّ الدخل (نظامي)", fp_lockedNote:"ثابت — خط الفقر لوزارة الموارد البشرية", fp_preview:"معاينة حسب شريحة الدخل", fp_previewNote:"يُعاد حسابه فور تغيير المعاملات", fp_inc:"الدخل", fp_maxH:"أقصى تكلفة سكن", fp_sup:"الدعم الشهري التقديري", fp_candidate:"مرشّح (غير محفوظ) — تحقّق قبل التفعيل", fp_baseline:"مطابق للنسخة الفعّالة v1.0",
   fc_monthly:"شهري", fc_cumulative:"تراكمي", fc_actual:"فعلي", fc_forecast:"تنبؤ (OLS)", fc_ci:"ثقة ±١٢٪",
   ins_title:"رؤى الذكاء الاصطناعي", ins_sub:"قراءة لغوية للوضع الحالي",
   ins_tenure_h:"تحوّل هيكلي في الحيازة", ins_tenure_t:"تضخم الإيجار ٨–١٠٪ يفوق نمو الأجور ٤–٥٪، بينما تبقى أسعار الشراء منخفضة.", ins_tenure_r:"تحويل الميزانية نحو دعم الشراء لإخراج المواطنين من سوق الإيجار المتقلب.",
@@ -3780,17 +4110,41 @@ function App(){
   const [leaks,setLeaks]=useState(seedLeaks);
   const [budget,setBudget]=useState({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18});
   const [formulaParams,setFormulaParams]=useState({ded:40,dur:20,ceil:500000,rate:4});
-  const [formulaVersion,setFormulaVersion]=useState({validated:false,canActivate:false,approvedPkgId:null,active:"v1.0",lastValidated:null});
+  const [formulaVersion,setFormulaVersion]=useState({validated:false,canActivate:false,approvedPkgId:null,approvedVersionId:null,active:"v1.0",lastValidated:null});
+  // Multi-dimensional formula matrix (region + housingType + incomeBand)
+  const [formulaMatrix,setFormulaMatrix]=useState({
+    region:"all", housingType:"all", incomeBand:"all",
+    regions:{ riyadh:{ded:40,dur:20,ceil:500000,rate:4}, makkah:{ded:38,dur:20,ceil:450000,rate:4}, eastern:{ded:40,dur:20,ceil:480000,rate:4}, asir:{ded:36,dur:20,ceil:380000,rate:3.5}, madinah:{ded:38,dur:20,ceil:420000,rate:4}, qassim:{ded:36,dur:20,ceil:400000,rate:3.5}, tabuk:{ded:35,dur:20,ceil:380000,rate:3.5}, hail:{ded:34,dur:20,ceil:360000,rate:3.5}, jazan:{ded:34,dur:20,ceil:360000,rate:3}, najran:{ded:33,dur:20,ceil:350000,rate:3}, bahah:{ded:33,dur:20,ceil:350000,rate:3}, jawf:{ded:33,dur:20,ceil:350000,rate:3}, northern:{ded:34,dur:20,ceil:360000,rate:3.5} },
+    housingTypes:{ offplan:{ded:42,dur:20,ceil:550000,rate:3.5}, ready:{ded:40,dur:20,ceil:500000,rate:4}, selfbuild:{ded:35,dur:25,ceil:400000,rate:3} },
+    incomeBands:{ lt5:{ded:45,dur:25,ceil:350000,rate:3}, "5to8":{ded:42,dur:20,ceil:450000,rate:3.5}, "8to10":{ded:40,dur:20,ceil:500000,rate:4}, "10to13":{ded:38,dur:20,ceil:550000,rate:4.5}, "13to16":{ded:36,dur:20,ceil:600000,rate:5}, gt16:{ded:34,dur:20,ceil:650000,rate:5.5} },
+  });
+  // Formula versions history (multi-version array)
+function seedFormulaVersions(fm){
+  return [
+    { id:"FML-v1.0", label:"Baseline v1.0", status:"active",
+      params:{ded:40,dur:20,ceil:500000,rate:4}, matrix:fm,
+      activatedAt:"2026-05-01 09:00", createdBy:"system", approvedBy:null, approvedPkgId:null,
+      description:"Initial formula from approved matrix", changelog:"Baseline release",
+      snapshot:{fg:0.72,hbr:0.405,spend:1.89e9} },
+    { id:"FML-v1.1", label:"Adjustment v1.1", status:"superseded",
+      params:{ded:43,dur:20,ceil:500000,rate:4}, matrix:fm,
+      activatedAt:"2026-06-01 10:00", createdBy:"analyst", approvedBy:"owner", approvedPkgId:"WO-2026-0401",
+      description:"Deduction rate 40%→43% to improve FG", changelog:"Increased deduction rate",
+      snapshot:{fg:0.95,hbr:0.390,spend:1.82e9} },
+  ];
+}
+  const [formulaVersions,setFormulaVersions]=useState(seedFormulaVersions(formulaMatrix));
   const [whatifContext,setWhatifContext]=useState(null);
   const [settingsVals,setSettingsVals]=useState(initSettingsVals());
   const [configChanges,setConfigChanges]=useState(seedConfigChanges);
-  // Dynamic baseline: reacts to formula activation. When v1.1 is active, allocation recomputes with formula params.
+  // Dynamic baseline: reacts to formula activation. Check formulaVersions for active version.
   const baseline = useMemo(() => {
-    if (formulaVersion?.active === "v1.1") {
-      return computeAllocation({}, formulaParams);
+    const activeVer = formulaVersions.find(v=>v.status==="active");
+    if (activeVer && activeVer.id !== "FML-v1.0") {
+      return computeAllocation({}, activeVer.params);
     }
     return computeAllocation({});
-  }, [formulaVersion.active, formulaParams]);
+  }, [formulaVersions]);
   const t=(k)=>{ const d=I18N[lang]; if(d && d[k]!==undefined) return d[k]; const e=I18N.en; return (e && e[k]!==undefined) ? e[k] : k; };
 
   useEffect(()=>{ const html=document.documentElement; html.lang=lang; html.dir=lang==="ar"?"rtl":"ltr"; },[lang]);
@@ -3803,20 +4157,42 @@ function App(){
     const pkg={ id, status:"submitted", sla:48,
       history:[{role:"analyst",action:"act_submit",ts,note:""}], ...data };
     setPackages(prev=>[pkg,...prev]);
-    pushAudit({role:"analyst",action:"act_submit",target:id,status:"submitted"});
+    pushAudit({role:"analyst",action:"act_submit",target:id,status:"submitted",cat:data.containsFormulaChange?"formula":"pkg"});
   }
   function actOnPackage(id,kind,note){
     const map={ approve:["approved","act_approve","owner"], escalate:["escalated","act_escalate","owner"],
       reject:["rejected","act_reject",user], adjudicate:["adjudicated","act_adjudicate","minister"] };
     const [status,action,role]=map[kind]; const ts=nowStr(lang);
+    const actedPkg = packages.find(p=>p.id===id);
+    const auditCat = actedPkg?.containsFormulaChange ? "formula" : "pkg";
     setPackages(prev=>{
       const pkg=prev.find(p=>p.id===id);
       if(pkg&&pkg.containsFormulaChange&&(kind==="approve"||kind==="adjudicate")){
-        setFormulaVersion(fv=>({...fv, canActivate:true, approvedPkgId:id }));
+        const approvedVersionId = pkg.formulaSnapshot?.versionId || null;
+        setFormulaVersion(fv=>({...fv, canActivate:true, approvedPkgId:id, approvedVersionId }));
+        // Update version status from "draft" to "validated"
+        if(approvedVersionId){
+          setFormulaVersions(prev=>prev.map(v=>v.id===approvedVersionId?{...v,status:"validated"}:v));
+        }
+        // Rollback: auto-activate the version directly
+        if(pkg.type==="rollback" && approvedVersionId){
+          const ver=formulaVersions.find(v=>v.id===approvedVersionId);
+          if(ver){
+            const ats=nowStr(lang);
+            setFormulaVersions(prev=>prev.map(v=>{
+              if(v.id===approvedVersionId) return {...v,status:"active",activatedAt:ats,params:{...v.params}};
+              if(v.status==="active") return {...v,status:"superseded",snapshot:{...v.snapshot}};
+              return v;
+            }));
+            setFormulaParams(ver.params);
+            setFormulaVersion(fv=>({...fv, active:approvedVersionId, canActivate:false, approvedVersionId:null, lastValidated:ats }));
+            pushAudit({role:"owner",action:"act_version",target:approvedVersionId,status:"activated",note:"Rollback activated: "+ver.description,cat:"formula"});
+          }
+        }
       }
       return prev.map(p=>p.id===id?{...p,status,history:[...p.history,{role,action,ts,note:note||""}]}:p);
     });
-    pushAudit({role,action,target:id,status,note:note||""});
+    pushAudit({role,action,target:id,status,note:note||"",cat:auditCat});
   }
   function recalcAlloc(){ setAllocation(a=>({...a, recalcAt:nowStr(lang), status:"draft", rejectNote:"", at:null})); }
   function submitAlloc(){ setAllocation(a=>({...a, status:"submitted", at:nowStr(lang), rejectNote:""})); }
@@ -3827,7 +4203,7 @@ function App(){
     setLeaks(prev=>prev.map(l=>l.id===id?{...l,status,history:[...l.history,{role,kind,ts,note:note||""}]}:l));
   }
   function saveBudget(vals){ setBudget(b=>({...b,...vals, enteredBy:user, enteredAt:nowStr(lang), daysSince:0})); }
-  function reset(){ setPackages(seedPackages()); setAudit(seedAudit()); setAllocation({lastSync:"2026-06-01 06:00", recalcAt:null, status:"draft", rejectNote:"", at:null}); setLeaks(seedLeaks()); setConfigChanges(seedConfigChanges()); setSettingsVals(initSettingsVals()); setBudget({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18}); setRoute(user==="minister"?"cockpit":"home"); }
+  function reset(){ setPackages(seedPackages()); setAudit(seedAudit()); setAllocation({lastSync:"2026-06-01 06:00", recalcAt:null, status:"draft", rejectNote:"", at:null}); setLeaks(seedLeaks()); setConfigChanges(seedConfigChanges()); setSettingsVals(initSettingsVals()); setFormulaParams({ded:40,dur:20,ceil:500000,rate:4}); setFormulaVersion({validated:false,canActivate:false,approvedPkgId:null,approvedVersionId:null,active:"v1.0",lastValidated:null}); setFormulaVersions([...seedFormulaVersions()]); setBudget({cash:1580, inkind:220, ceiling:4200, enteredBy:"owner", enteredAt:"2026-05-28 10:00", daysSince:18}); setRoute(user==="minister"?"cockpit":"home"); }
 
   function addConfigChange(data){
     const ts=nowStr(lang);
@@ -3863,8 +4239,43 @@ function App(){
   function setSettingVal(key,val){
     setSettingsVals(prev=>({...prev,[key]:val}));
   }
+  // Formula version management
+  function createFormulaVersion(label, description, params, matrixSnapshot){
+    const ts=nowStr(lang);
+    const id="FML-v"+(formulaVersions.length+1).toFixed(1);
+    const sv=scenarioSavings(computeAllocation({}, params||formulaParams));
+    const scn=computeAllocation({}, params||formulaParams);
+    const ver={ id, label, status:"draft", params:params||{...formulaParams},
+      matrix:matrixSnapshot||{...formulaMatrix},
+      activatedAt:null, createdBy:user, approvedBy:null, approvedPkgId:null,
+      description, changelog:description, createdAt:ts,
+      snapshot:{fg:scn.FG, hbr:scn.HBR, spend:scn.spend/1e9} };
+    setFormulaVersions(prev=>[ver,...prev]);
+    pushAudit({role:user,action:"act_version",target:id,status:"created",note:"Created: "+description,cat:"formula"});
+    return id;
+  }
+  function activateFormulaVersion(id){
+    const ver=formulaVersions.find(v=>v.id===id);
+    if(!ver) return;
+    const ts=nowStr(lang);
+    // Deactivate current active + activate target in a single pass
+    setFormulaVersions(prev=>prev.map(v=>{
+      if(v.id===id) return {...v,status:"active",activatedAt:ts,params:{...v.params}};
+      if(v.status==="active") return {...v,status:"superseded",snapshot:{...v.snapshot}};
+      return v;
+    }));
+    // Sync to engine
+    setFormulaParams(ver.params);
+    setFormulaVersion(fv=>({...fv, active:id, validated:true, canActivate:false, approvedVersionId:null, lastValidated:ts }));
+    pushAudit({role:user,action:"act_version",target:id,status:"activated",note:"Activated: "+ver.description,cat:"formula"});
+  }
+  function rollbackToVersion(id){
+    const ver=formulaVersions.find(v=>v.id===id);
+    if(!ver) return;
+    activateFormulaVersion(id);
+  }
 
-  const store={ t,lang,setLang,currency,setCurrency,user,setUser,route,setRoute,packages,audit,addPackage,actOnPackage,reset,allocation,recalcAlloc,submitAlloc,actAlloc,leaks,leakAct,budget,saveBudget,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,baseline,pushAudit,configChanges,addConfigChange,submitConfigChange,actOnConfigChange,settingsVals,setSettingVal,whatifContext,setWhatifContext };
+  const store={ t,lang,setLang,currency,setCurrency,user,setUser,route,setRoute,packages,audit,addPackage,actOnPackage,reset,allocation,recalcAlloc,submitAlloc,actAlloc,leaks,leakAct,budget,saveBudget,formulaParams,setFormulaParams,formulaVersion,setFormulaVersion,baseline,pushAudit,configChanges,addConfigChange,submitConfigChange,actOnConfigChange,settingsVals,setSettingVal,whatifContext,setWhatifContext,formulaMatrix,setFormulaMatrix,formulaVersions,setFormulaVersions,createFormulaVersion,activateFormulaVersion,rollbackToVersion };
 
   if(!user) return (<Ctx.Provider value={store}><Login/></Ctx.Provider>);
 
